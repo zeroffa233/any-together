@@ -7,8 +7,11 @@
  * The page logic never adjudicates authoritative state: it locates the target
  * video, executes apply-state commands sent by the background worker, reports
  * actual media observations, and relays user-initiated media events as
- * semantic intents. All decisions about what is authoritative happen in the
- * Node companion process; the background worker only bridges messages.
+ * semantic intents. Actual-state echoes of a user-native transition are held
+ * behind a bounded pending-intent window, so they can never race the relayed
+ * intent to the authority and be judged against the pre-intent state. All
+ * decisions about what is authoritative happen in the Node companion
+ * process; the background worker only bridges messages.
  *
  * Site URL rules, identity derivation and matching live in identity.js
  * (AnyTogetherIdentity, loaded before this script); the content core never
@@ -27,6 +30,16 @@ const APPLY_SETTLE_MS = 500;
 const TIMEUPDATE_REPORT_INTERVAL_MS = 1000;
 const TIMEUPDATE_REPORT_DRIFT = 0.5;
 const REFRESH_INTERVAL_MS = 1500;
+const PENDING_INTENT_WINDOW_MS = 700;
+
+// Media events that merely echo the user's own native transition. While the
+// bounded pending-intent window is active, actual-state reports triggered by
+// these are held back so an echo can never be judged against the pre-intent
+// authoritative state (e.g. ready vs playing); observations that are not
+// transition echoes (buffering/ended/error) always report.
+const INTENT_ECHO_EVENTS = new Set([
+  'play', 'playing', 'pause', 'seeking', 'seeked', 'ratechange', 'timeupdate',
+]);
 
 const MEDIA_EVENTS = [
   'play', 'pause', 'seeking', 'seeked', 'waiting', 'playing', 'ended', 'error', 'ratechange', 'timeupdate',
@@ -45,6 +58,10 @@ const PAGE = {
   lastAppliedRevision: -1, // newest authoritative revision executed on this page
   lastActualSentAt: 0,
   lastSentPosition: null,
+  // Bounded window opened when a user-native event relays its unique intent:
+  // transition echoes are held back until the authority applies (apply-result
+  // clears the window) or the window expires, so they cannot race the intent.
+  pendingIntentUntil: 0,
 };
 
 // --- identity -------------------------------------------------------------------
@@ -210,23 +227,33 @@ function onMediaEvent(event) {
   // else is a page-side change (user interaction or site autoplay) worth
   // relaying as a semantic intent. The server remains the only adjudicator.
   const userInitiated = PAGE.initialApplied && Date.now() >= PAGE.settleUntil && !PAGE.applying;
+  let relayedIntent = false;
   if (userInitiated && target) {
     switch (event.type) {
       case 'play':
         sendToBackground({ type: 'user-intent', kind: 'play' });
+        relayedIntent = true;
         break;
       case 'pause':
         sendToBackground({ type: 'user-intent', kind: 'pause' });
+        relayedIntent = true;
         break;
       case 'seeked':
         sendToBackground({ type: 'user-intent', kind: 'seek', payload: { targetSeconds: target.currentTime } });
+        relayedIntent = true;
         break;
       case 'ratechange':
         sendToBackground({ type: 'user-intent', kind: 'set-rate', payload: { playbackRate: target.playbackRate } });
+        relayedIntent = true;
         break;
       default:
         break;
     }
+  }
+  // A native seek starts with 'seeking' (mid-seek phase) before the 'seeked'
+  // intent relays; open the window already so the seeking echo is held too.
+  if (relayedIntent || (userInitiated && event.type === 'seeking')) {
+    PAGE.pendingIntentUntil = Date.now() + PENDING_INTENT_WINDOW_MS;
   }
 
   // No actual-state/user-intent before the first authoritative apply: this
@@ -234,6 +261,15 @@ function onMediaEvent(event) {
   // state would fabricate stale/drift diagnostics. Only apply-result replies
   // report real state before that point.
   if (!PAGE.initialApplied) return;
+
+  // Pending-intent window: the events that merely echo the user's own native
+  // transition are held back while the intent may still be in flight or its
+  // apply has not landed yet — an echo judged against the pre-intent
+  // authoritative state (e.g. ready vs playing) would be a stale transient
+  // desync. The window is bounded and every authoritative apply/result clears
+  // it, so non-user autoplay, real drift, buffering, ended and error reports
+  // resume at full fidelity.
+  if (Date.now() < PAGE.pendingIntentUntil && INTENT_ECHO_EVENTS.has(event.type)) return;
 
   if (event.type === 'timeupdate') {
     const now = Date.now();
@@ -267,12 +303,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   void (async () => {
     const state = message.state;
     if (!state || typeof state !== 'object' || !Number.isInteger(state.stateRevision)) {
+      PAGE.pendingIntentUntil = 0;
       sendResponse({ type: 'apply-result', result: 'rejected', error: '无效的权威状态', snapshot: readSnapshot() });
       return;
     }
     // Unsupported guard: no registered syncer serves the current page (or SPA
     // navigation left the syncer's site) — there is nothing to control.
     if (!PAGE.identity) {
+      PAGE.pendingIntentUntil = 0;
       sendResponse({
         type: 'apply-result',
         result: 'unsupported',
@@ -284,6 +322,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Identity guard: never execute a state for a different resource on this
     // page (covers SPA navigation away from the session video).
     if (!AnyTogetherIdentity.identityEqual(state.resourceIdentity, PAGE.identity)) {
+      PAGE.pendingIntentUntil = 0;
       sendResponse({
         type: 'apply-result',
         result: 'rejected',
@@ -294,6 +333,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     // Revision guard: a stale apply must never overwrite a newer page state.
     if (state.stateRevision <= PAGE.lastAppliedRevision) {
+      PAGE.pendingIntentUntil = 0;
       sendResponse({ type: 'apply-result', result: 'applied', snapshot: readSnapshot() });
       return;
     }
@@ -312,6 +352,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       PAGE.applying = false;
       PAGE.settleUntil = Date.now() + APPLY_SETTLE_MS;
       PAGE.initialApplied = true;
+      // An authoritative apply/result has landed: the intent's effect is now
+      // part of the authoritative state, so transition echoes may report
+      // again at full fidelity.
+      PAGE.pendingIntentUntil = 0;
     }
     if (payload.result === 'applied') PAGE.lastAppliedRevision = state.stateRevision;
     sendResponse({ type: 'apply-result', ...payload });
@@ -345,6 +389,7 @@ function refresh() {
     PAGE.target = null;
     PAGE.buffering = false;
     PAGE.settleUntil = 0;
+    PAGE.pendingIntentUntil = 0;
     PAGE.lastAppliedRevision = -1;
   }
 
@@ -371,6 +416,7 @@ function refresh() {
       PAGE.initialApplied = false;
       PAGE.buffering = false;
       PAGE.settleUntil = 0;
+      PAGE.pendingIntentUntil = 0;
       PAGE.lastAppliedRevision = -1;
     }
   }

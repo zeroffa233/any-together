@@ -39,8 +39,7 @@ export type ConsistencyIssue = {
   driftMs?: number;
   /**
    * Whether this issue keeps the readiness gate closed. Defaults to membership
-   * in READINESS_BLOCKING_KINDS; duration-mismatch sets it explicitly because
-   * blocking depends on whether the authoritative duration is known.
+   * in READINESS_BLOCKING_KINDS.
    */
   blocking?: boolean;
 };
@@ -57,9 +56,10 @@ export type ConsistencyResult = {
 
 /**
  * Issues that must keep the session gate closed. A rate mismatch is a real
- * divergence from the authoritative state and blocks. Duration mismatches are
- * handled per-issue: they block only when both sides know the duration,
- * because the authority may legitimately not know the media duration.
+ * divergence from the authoritative state and blocks. A duration mismatch is
+ * only diagnosed when both sides know a concrete duration and disagree, so
+ * every diagnosed duration mismatch blocks; an authority that does not yet
+ * know the duration is never flagged against a report that does.
  */
 export const READINESS_BLOCKING_KINDS: ReadonlySet<ConsistencyIssueKind> = new Set<ConsistencyIssueKind>([
   'stale-report',
@@ -70,6 +70,7 @@ export const READINESS_BLOCKING_KINDS: ReadonlySet<ConsistencyIssueKind> = new S
   'unacceptable-phase',
   'position-drift',
   'rate-mismatch',
+  'duration-mismatch',
   'apply-failure',
 ]);
 
@@ -173,14 +174,16 @@ export function evaluateActualState(authoritative: PlaybackState, report: Actual
       detail: `Reported playback rate ${report.playbackRate} does not match the authoritative rate ${authoritative.playbackRate}`,
     });
   }
-  if (report.durationSeconds !== authoritative.durationSeconds) {
+  // The authority may legitimately not know the media duration yet
+  // (durationSeconds null); a report that carries a concrete duration is
+  // information completing the state, not a divergence. A mismatch is only
+  // diagnosed when both sides actually know a concrete duration and disagree.
+  if (authoritative.durationSeconds !== null
+    && report.durationSeconds !== null
+    && report.durationSeconds !== authoritative.durationSeconds) {
     issues.push({
       kind: 'duration-mismatch',
-      // The authority may legitimately not know the media duration yet
-      // (durationSeconds null); a mismatch is only a readiness violation when
-      // both sides actually know the duration and disagree.
-      blocking: authoritative.durationSeconds !== null && report.durationSeconds !== null,
-      detail: `Reported duration ${String(report.durationSeconds)} does not match the authoritative duration ${String(authoritative.durationSeconds)}`,
+      detail: `Reported duration ${report.durationSeconds} does not match the authoritative duration ${authoritative.durationSeconds}`,
     });
   }
 
