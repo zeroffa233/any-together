@@ -8,7 +8,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/tests/core/*.test.js dist/tests/integration/*.test.js dist/tests/adapters/*.test.js",
+    "test": "npm run build && node --test dist/tests/core/*.test.js dist/tests/integration/*.test.js dist/tests/adapters/*.test.js dist/tests/server/*.test.js",
     "smoke:lan": "npm run build && node dist/src/cli/smoke-lan.js",
     "smoke:process": "npm run build && node dist/src/cli/smoke-process.js",
     "start:host": "npm run build && node dist/src/cli/host.js",
