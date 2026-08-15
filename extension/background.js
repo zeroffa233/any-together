@@ -55,6 +55,13 @@ const SESSION = {
   bindInFlight: null, // resource identity of a resource-bind sent but not yet adopted
   identity: null, // session ResourceIdentity; adopted from join-accepted or a
   // newer authoritative state after a participant resource-bind
+  // Client-only one-time auto recovery: once the authority reports the session
+  // ready, the client tab is refreshed in place exactly once per resource so
+  // the page re-injects the authoritative state and reports its actual state.
+  // The fingerprint dedups by resource (adapterId|canonicalUrl|resourceId) —
+  // revisions/playback updates never re-trigger it, a resource switch does.
+  clientAutoRecoveredFingerprint: null, // resource whose recovery already ran
+  clientRecoverInFlight: null, // fingerprint of a recovery reload in the queue
   latestState: null, // most recent accepted authoritative PlaybackState
   latestStatus: null, // most recent session-status broadcast
   lastDiagnostic: null, // most recent structured diagnostic
@@ -282,6 +289,8 @@ async function connect(options) {
     SESSION.clientTabId = null;
     SESSION.hostTabId = null;
     SESSION.bindInFlight = null;
+    SESSION.clientAutoRecoveredFingerprint = null;
+    SESSION.clientRecoverInFlight = null;
     SESSION.lastAppliedRevision = -1;
     SESSION.role = null;
     SESSION.latestState = null;
@@ -306,6 +315,8 @@ function disconnect() {
   SESSION.clientTabId = null;
   SESSION.hostTabId = null;
   SESSION.bindInFlight = null;
+  SESSION.clientAutoRecoveredFingerprint = null;
+  SESSION.clientRecoverInFlight = null;
   SESSION.lastAppliedRevision = -1;
   SESSION.role = null;
   SESSION.latestState = null;
@@ -385,6 +396,9 @@ function handleServerMessage(raw) {
     case 'session-status':
       SESSION.latestStatus = message;
       notifyPopup({ type: 'session-status', status: message });
+      // Client-only: once the session is ready, one in-place refresh per
+      // resource re-syncs a page whose display drifted from the authority.
+      maybeAutoRecoverClient();
       break;
     case 'diagnostic':
       SESSION.lastDiagnostic = message;
@@ -574,6 +588,10 @@ async function routeAndApply() {
   const state = SESSION.latestState;
   if (!state) return;
   if (SESSION.lastAppliedRevision >= state.stateRevision) return; // already applied
+  // A client auto-recovery reload is queued for the current resource: applying
+  // to the page that is about to be refreshed would re-report a stale page.
+  // The reloaded page re-applies through its own content-ready registration.
+  if (SESSION.clientRecoverInFlight !== null) return;
   const canonicalUrl = state.resourceIdentity?.canonicalUrl;
   if (!canonicalUrl || !IDENTITY.isSupportedUrl(canonicalUrl)) return;
   // Route first, apply only after the apply target is known — never race the two.
@@ -740,6 +758,121 @@ function registerApplyTarget(tabId, hasVideo) {
     setNotice(null);
   }
   enqueueApply();
+  // Client-only one-time auto recovery: if the session is already ready but
+  // this resource has not been recovered yet, queue a single in-place refresh
+  // (it is serialized after the pending apply by the shared pipeline).
+  if (hasVideo !== false) maybeAutoRecoverClient();
+}
+
+// --- client auto recovery ------------------------------------------------------
+// The authority's readiness signal is the trigger: when it reports the session
+// ready, the client tab may still be showing a stale phase (authority
+// buffering while the page actually plays, authority paused while the page
+// seeks). Refresh the client's own tab in place exactly once per resource so
+// the fresh page re-injects the current authoritative state and reports its
+// actual state back. Host pages are never touched, no new tab/window is ever
+// created, and revisions/playback updates never re-trigger a refresh.
+
+/**
+ * Stable per-resource key for the recovery dedup — two identities are the same
+ * resource exactly when IDENTITY.identityEqual says so.
+ */
+function identityFingerprint(identity) {
+  if (!identity || typeof identity !== 'object') return null;
+  return `${identity.adapterId}|${identity.canonicalUrl}|${identity.resourceId ?? ''}`;
+}
+
+/**
+ * Queue the one-time client refresh when the session is ready and the current
+ * resource has not been recovered yet. Called from the session-status handler
+ * (ready flips true) and from registerApplyTarget (a page registered after the
+ * session was already ready). Every condition is re-checked at execution time.
+ */
+function maybeAutoRecoverClient() {
+  if (SESSION.role !== 'client') return; // the host never auto-refreshes
+  if (SESSION.status !== 'connected') return;
+  if (SESSION.latestStatus?.ready !== true) return; // sync not established yet
+  if (!SESSION.latestState) return; // nothing authoritative to re-inject yet
+  const fingerprint = identityFingerprint(SESSION.identity);
+  if (!fingerprint) return;
+  // One recovery per resource: a resource switch resets the fingerprint, but
+  // later revisions/playback updates never re-trigger it.
+  if (SESSION.clientAutoRecoveredFingerprint === fingerprint) return;
+  // Never stack recoveries — the in-flight one already covers this resource.
+  if (SESSION.clientRecoverInFlight !== null) return;
+  // A resource switch is landing: recover the FRESH identity once it is
+  // adopted, never reload the page for the outgoing one.
+  if (SESSION.bindInFlight !== null) return;
+  // No client page yet (still routing/opening): wait — the page's
+  // content-ready registration re-checks and triggers once it is in place.
+  if (SESSION.clientTabId === null) return;
+  SESSION.clientRecoverInFlight = fingerprint;
+  enqueueClientRecovery();
+}
+
+/**
+ * Serialize the recovery reload with the route+apply pipeline so it can never
+ * race a connect/route/apply cycle.
+ */
+function enqueueClientRecovery() {
+  SESSION.applyQueue = SESSION.applyQueue
+    .then(() => performClientRecovery())
+    .catch((error) => {
+      SESSION.clientRecoverInFlight = null;
+      SESSION.lastError = error instanceof Error ? error.message : String(error);
+      setStatus(SESSION.status);
+    });
+}
+
+/**
+ * Reload the client's own tab in place (same tab, no new window) and consume
+ * the recovery for this resource. The reloaded page's content-ready
+ * re-registers the apply target and re-applies the current authoritative
+ * state, then reports its actual state back through the normal pipeline.
+ */
+async function performClientRecovery() {
+  if (SESSION.role !== 'client' || SESSION.status !== 'connected') return;
+  const fingerprint = SESSION.clientRecoverInFlight;
+  if (fingerprint === null) return;
+  // The resource may have switched while the reload was queued (or a bind is
+  // still landing): never reload for a stale resource — the fresh identity
+  // gets its own recovery once adopted.
+  if (identityFingerprint(SESSION.identity) !== fingerprint || SESSION.bindInFlight !== null) {
+    SESSION.clientRecoverInFlight = null;
+    return;
+  }
+  const tabId = SESSION.clientTabId;
+  if (tabId === null) {
+    SESSION.clientRecoverInFlight = null;
+    return;
+  }
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab?.url || !IDENTITY.identityEqual(IDENTITY.deriveIdentity(tab.url), SESSION.identity)) {
+      // The page left the session resource (manual navigation, login wall):
+      // recovery is not consumed; the content-ready/route pipeline re-opens it.
+      SESSION.clientRecoverInFlight = null;
+      clearApplyTarget();
+      enqueueApply();
+      return;
+    }
+  } catch {
+    // Tab gone: let routing re-open the session page.
+    SESSION.clientRecoverInFlight = null;
+    clearApplyTarget();
+    enqueueApply();
+    return;
+  }
+  try {
+    await chrome.tabs.reload(tabId);
+    SESSION.clientAutoRecoveredFingerprint = fingerprint;
+    SESSION.clientRecoverInFlight = null;
+  } catch (error) {
+    // Failed reload: explicit notice, and the fingerprint stays unrecovered so
+    // the next readiness signal may retry once.
+    SESSION.clientRecoverInFlight = null;
+    setNotice(`从机页面自动刷新失败: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // --- tab lifecycle --------------------------------------------------------------
@@ -793,20 +926,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         .catch((error) => sendResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }));
       return true;
     }
-    case 'resync':
-      if (SESSION.status !== 'connected' || !SESSION.ws) {
-        sendResponse({ ok: false, error: '未连接会话' });
-        return undefined;
-      }
-      // A snapshot at the current revision is intentionally rejected by the
-      // stale-state guard. Force the page apply pipeline to run against the
-      // already-held authoritative state instead of relying on that snapshot
-      // to create a new revision.
-      SESSION.lastAppliedRevision = -1;
-      requestSnapshot();
-      enqueueApply();
-      sendResponse({ ok: true });
-      return undefined;
     case 'disconnect':
       disconnect();
       sendResponse({ ok: true });

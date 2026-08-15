@@ -21,6 +21,7 @@ import {
   arePhasesReadinessEquivalent,
   evaluateActualState,
   POSITION_DRIFT_THRESHOLD_MS,
+  READINESS_BLOCKING_KINDS,
 } from '../../src/core/consistency-monitor.js';
 import { createBilibiliResourceIdentity, ResourceIdentityError } from '../../src/shared/resource.js';
 import {
@@ -413,7 +414,7 @@ describe('applyIntent', () => {
   });
 });
 
-describe('consistency evaluation: ready/paused phase equivalence', () => {
+describe('consistency evaluation: phase compatibility (ready/paused equivalence, transient buffering/seeking)', () => {
   const ready = createInitialPlaybackState(SESSION_ID, identity, T0);
 
   function pausedReport(overrides: Partial<ActualStateReport> = {}): ActualStateReport {
@@ -453,8 +454,60 @@ describe('consistency evaluation: ready/paused phase equivalence', () => {
     assert.deepEqual(evaluation.issues, []);
   });
 
-  it('still flags real divergences: playing, ended and buffering reports against a ready authority are phase mismatches', () => {
-    for (const mediaPhase of ['playing', 'ended', 'buffering'] as const) {
+  it('treats buffering/seeking reports as transient-compatible with ready/paused/playing authorities, with no readiness-blocking issues (avoids transient buffering/seek false positives)', () => {
+    const paused = applyIntent(ready, makeIntent('pause'), T1);
+    const playing = applyIntent(ready, makeIntent('play'), T1);
+    const authorities: ReadonlyArray<{ label: string; state: PlaybackState; revision: number }> = [
+      { label: 'ready', state: ready, revision: ready.stateRevision },
+      { label: 'paused', state: paused, revision: paused.stateRevision },
+      { label: 'playing', state: playing, revision: playing.stateRevision },
+    ];
+    for (const { label, state, revision } of authorities) {
+      for (const mediaPhase of ['buffering', 'seeking'] as const) {
+        const evaluation = evaluateActualState(state, pausedReport({ mediaPhase, observedRevision: revision }));
+        assert.equal(
+          evaluation.consistent,
+          true,
+          `${mediaPhase} against a ${label} authority must stay consistent while the media settles (no transient false positive), got issues: ${JSON.stringify(evaluation.issues)}`,
+        );
+        assert.ok(
+          evaluation.issues.every((issue) => !(issue.blocking ?? READINESS_BLOCKING_KINDS.has(issue.kind))),
+          `${mediaPhase} against a ${label} authority must not raise a readiness-blocking issue, got issues: ${JSON.stringify(evaluation.issues)}`,
+        );
+        assert.ok(
+          !evaluation.issues.some((issue) => issue.kind === 'unacceptable-phase'),
+          `${mediaPhase} is a transient lifecycle state, not an unacceptable phase`,
+        );
+      }
+    }
+  });
+
+  it('still flags settled phase mismatches: playing vs paused in both directions, ended against ready, and transient reports against terminal authorities', () => {
+    const paused = applyIntent(ready, makeIntent('pause'), T1);
+    const playing = applyIntent(ready, makeIntent('play'), T1);
+
+    // Playing vs paused is a settled divergence — transient compatibility must not relax it.
+    const pausedAgainstPlaying = evaluateActualState(playing, {
+      ...pausedReport(),
+      observedRevision: playing.stateRevision,
+    });
+    assert.equal(pausedAgainstPlaying.consistent, false, 'a paused report against a playing authority must stay a desync');
+    assert.ok(
+      pausedAgainstPlaying.issues.some((issue) => issue.kind === 'phase-mismatch'),
+      'a paused report against a playing authority must carry a phase-mismatch issue',
+    );
+    const playingAgainstPaused = evaluateActualState(paused, {
+      ...pausedReport({ mediaPhase: 'playing' }),
+      observedRevision: paused.stateRevision,
+    });
+    assert.equal(playingAgainstPaused.consistent, false, 'a playing report against a paused authority must stay a desync');
+    assert.ok(
+      playingAgainstPaused.issues.some((issue) => issue.kind === 'phase-mismatch'),
+      'a playing report against a paused authority must carry a phase-mismatch issue',
+    );
+
+    // Settled divergences against a ready authority stay failures.
+    for (const mediaPhase of ['playing', 'ended'] as const) {
       const evaluation = evaluateActualState(ready, pausedReport({ mediaPhase }));
       assert.equal(evaluation.consistent, false, `${mediaPhase} against a ready authority must not be consistent`);
       assert.ok(
@@ -462,11 +515,28 @@ describe('consistency evaluation: ready/paused phase equivalence', () => {
         `${mediaPhase} against a ready authority must carry a phase-mismatch issue`,
       );
     }
-    // error/buffering are additionally unacceptable on their own.
-    const buffering = evaluateActualState(ready, pausedReport({ mediaPhase: 'buffering' }));
+
+    // Transient tolerance stops at terminal authorities: buffering/seeking cannot
+    // coexist with a settled 'ended'/'error' outcome.
+    for (const authorityPhase of ['ended', 'error'] as const) {
+      const authority: PlaybackState = { ...ready, mediaPhase: authorityPhase };
+      for (const mediaPhase of ['buffering', 'seeking'] as const) {
+        const evaluation = evaluateActualState(authority, pausedReport({ mediaPhase }));
+        assert.equal(evaluation.consistent, false, `${mediaPhase} against a ${authorityPhase} authority must stay a desync`);
+        assert.ok(
+          evaluation.issues.some((issue) => issue.kind === 'phase-mismatch'),
+          `${mediaPhase} against a ${authorityPhase} authority must carry a phase-mismatch issue`,
+        );
+      }
+    }
+  });
+
+  it('flags error reports as unacceptable on their own, beyond the transient tolerance', () => {
+    const evaluation = evaluateActualState(ready, pausedReport({ mediaPhase: 'error' }));
+    assert.equal(evaluation.consistent, false, 'an error report must not be consistent');
     assert.ok(
-      buffering.issues.some((issue) => issue.kind === 'unacceptable-phase'),
-      'buffering must also be flagged as an unacceptable phase',
+      evaluation.issues.some((issue) => issue.kind === 'unacceptable-phase'),
+      'an error report must be flagged as an unacceptable phase',
     );
   });
 
@@ -478,12 +548,19 @@ describe('consistency evaluation: ready/paused phase equivalence', () => {
     assert.ok((drift.driftMs ?? 0) > POSITION_DRIFT_THRESHOLD_MS, 'the drift must exceed the threshold');
   });
 
-  it('keeps judging real mismatches on other fields: a paused report with a different rate is a desync', () => {
+  it('keeps judging real mismatches on other fields: a paused report with a different rate is a desync (transient tolerance does not mask rate mismatch)', () => {
     const evaluation = evaluateActualState(ready, pausedReport({ playbackRate: 2 }));
     assert.equal(evaluation.consistent, false, 'a rate mismatch must stay a desync');
     assert.ok(
       evaluation.issues.some((issue) => issue.kind === 'rate-mismatch'),
       'the mismatched rate must be reported',
+    );
+    // Transient compatibility covers the phase only — a settled mismatch on another field still fails.
+    const bufferingWithWrongRate = evaluateActualState(ready, pausedReport({ mediaPhase: 'buffering', playbackRate: 2 }));
+    assert.equal(bufferingWithWrongRate.consistent, false, 'a buffering report with a mismatched rate must stay a desync');
+    assert.ok(
+      bufferingWithWrongRate.issues.some((issue) => issue.kind === 'rate-mismatch'),
+      'the buffering report must still carry a rate-mismatch issue',
     );
   });
 });

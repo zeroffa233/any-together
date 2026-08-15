@@ -180,7 +180,6 @@ function renderStatus(info) {
   if (info.sessionId && !$('session').value.trim()) $('session').value = info.sessionId;
   if (info.participantId && !$('participant').value.trim()) $('participant').value = info.participantId;
   $('copysession').disabled = !$('session').value.trim();
-  $('resync').disabled = !connected;
   showError(info.lastError ?? '');
   renderReadiness(currentSessionStatus);
 }
@@ -366,7 +365,3 @@ $('joinaccept').addEventListener('click', () => {
 $('joinreject').addEventListener('click', () => {
   void sendJoinDecision(false);
 });
-  $('resync').addEventListener('click', async () => {
-    const reply = await send({ type: 'resync' });
-    if (reply && reply.ok === false) showError(reply.error ?? '重新同步失败');
-  });

@@ -510,12 +510,17 @@ export class SessionAuthority {
       return;
     }
 
-    // A terminal or unavailable media phase is an observed shared transition,
-    // not merely a local diagnostic. Promote it to one authoritative revision
-    // so every endpoint receives the same phase — but only when the report is
-    // for the CURRENT revision AND the CURRENT resource: a stale page echoing
-    // the new revision against its old resource must never overwrite the newly
-    // bound resource's state, and an unbound session has nothing to promote.
+    // A terminal media phase is an observed shared transition, not merely a
+    // local diagnostic. Promote it to one authoritative revision so every
+    // endpoint receives the same phase — but only when the report is for the
+    // CURRENT revision AND the CURRENT resource: a stale page echoing the new
+    // revision against its old resource must never overwrite the newly bound
+    // resource's state, and an unbound session has nothing to promote.
+    // Buffering is deliberately NOT promoted: it is a transient, single-ended
+    // lifecycle state, and promoting one endpoint's momentary buffer would
+    // rewrite the global authority phase, pulling the other endpoint into
+    // 'buffering' (jitter) while the media is actually in sync. The transient
+    // phase is instead judged compatible by the consistency evaluation.
     // Stored reports are invalidated after a bind because the new revision
     // must be observed by both endpoints again.
     const observedPhase = report.mediaPhase;
@@ -524,7 +529,7 @@ export class SessionAuthority {
       && isResourceIdentityEqual(report.resourceIdentity, sessionIdentity)
       && report.observedRevision === this.state.stateRevision
       && report.applyResult === 'applied'
-      && ['ended', 'error', 'buffering'].includes(observedPhase)
+      && ['ended', 'error'].includes(observedPhase)
       && observedPhase !== this.state.mediaPhase;
     if (promotesPhase) {
       const { errorCode: _previousErrorCode, ...stateWithoutError } = this.state;
