@@ -87,7 +87,12 @@ function setMode(next, skipFetch = false) {
   $('copysession').classList.toggle('hidden', !host);
   $('localsession').classList.toggle('hidden', host);
   $('session').placeholder = host ? '自动从本机伴随进程获取' : '主机分享的 Session ID';
-  if (host) $('server').value = '127.0.0.1'; // host mode talks to the local machine only
+  if (host) {
+    $('server').value = '127.0.0.1'; // host mode talks to the local machine only
+  } else if ($('server').value.trim() === '127.0.0.1') {
+    // Do not carry the host-only localhost default into client mode.
+    $('server').value = '';
+  }
   if (host && !skipFetch && lastStatus !== 'connected' && !$('session').value.trim()) {
     void fetchLocalSession();
   }
@@ -160,8 +165,8 @@ function renderStatus(info) {
   }
   // Restore the connection form from live status so a reopened popup is never
   // empty while the worker still holds the session.
-  if (info.host && !$('server').value.trim()) $('server').value = info.host;
-  if (info.port && !$('port').value.trim()) $('port').value = String(info.port);
+  if (info.host && (info.status === 'connected' || info.status === 'connecting')) $('server').value = info.host;
+  if (info.port && (info.status === 'connected' || info.status === 'connecting')) $('port').value = String(info.port);
   if (info.sessionId && !$('session').value.trim()) $('session').value = info.sessionId;
   if (info.participantId && !$('participant').value.trim()) $('participant').value = info.participantId;
   $('copysession').disabled = !$('session').value.trim();

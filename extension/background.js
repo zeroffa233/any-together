@@ -703,6 +703,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: '未连接会话' });
         return undefined;
       }
+      // A snapshot at the current revision is intentionally rejected by the
+      // stale-state guard. Force the page apply pipeline to run against the
+      // already-held authoritative state instead of relying on that snapshot
+      // to create a new revision.
+      SESSION.lastAppliedRevision = -1;
       requestSnapshot();
       enqueueApply();
       sendResponse({ ok: true });
