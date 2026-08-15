@@ -5,14 +5,38 @@ import { createBilibiliResourceIdentity } from '../shared/resource.js';
 
 const DEFAULT_PORT = 8765;
 
-// --auto-accept maps to SessionAuthority.autoAcceptJoins: the second
-// participant joins without a host join-decision. It exists ONLY for automatic
-// CLI smoke runs; interactive sessions must keep the manual approval gate.
-const autoAccept = process.argv.includes('--auto-accept');
-
-// Positional arguments only; flags are stripped so an omitted resource URL
-// cannot accidentally consume `--auto-accept` as the URL.
-const positional = process.argv.slice(2).filter((arg) => arg !== '--auto-accept');
+// Flags are parsed separately so an optional resource URL never consumes a
+// flag value. `--session-id ID` and `--session-id=ID` are equivalent; when
+// omitted, SessionAuthority continues to generate a UUID.
+const args = process.argv.slice(2);
+const autoAccept = args.includes('--auto-accept');
+const positional: string[] = [];
+let fixedSessionId: string | undefined;
+for (let index = 0; index < args.length; index += 1) {
+  const arg = args[index];
+  if (arg === undefined) continue;
+  if (arg === '--auto-accept') continue;
+  if (arg === '--session-id') {
+    const value = args[index + 1];
+    if (!value || value.startsWith('--')) {
+      console.error('host: --session-id requires a non-empty value');
+      process.exit(2);
+    }
+    fixedSessionId = value;
+    index += 1;
+    continue;
+  }
+  if (arg.startsWith('--session-id=')) {
+    const value = arg.slice('--session-id='.length).trim();
+    if (!value) {
+      console.error('host: --session-id= requires a non-empty value');
+      process.exit(2);
+    }
+    fixedSessionId = value;
+    continue;
+  }
+  positional.push(arg);
+}
 const port = Number(positional[0] ?? DEFAULT_PORT);
 const resourceUrl = positional[1];
 if (!Number.isInteger(port) || port < 0 || port > 65535) {
@@ -26,6 +50,7 @@ if (!Number.isInteger(port) || port < 0 || port > 65535) {
 const authority = new SessionAuthority({
   host: '0.0.0.0',
   port,
+  ...(fixedSessionId === undefined ? {} : { sessionId: fixedSessionId }),
   autoAcceptJoins: autoAccept,
   ...(resourceUrl === undefined ? {} : { resourceIdentity: createBilibiliResourceIdentity(resourceUrl) }),
 });
