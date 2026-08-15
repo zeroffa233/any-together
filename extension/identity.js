@@ -205,7 +205,7 @@
     domain: 'bilibili.com',
     // Path must start with /video (next char /, query, hash or end of URL);
     // anchored at the scheme so embedded "/video" segments never match.
-    urlRule: '^https?://[^/]*/video(/|$|[?#])',
+    urlRule: { source: '^https?://[^/]*/video(/|$|[?#])', flags: '' },
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
     deriveIdentity(url) {
       const match = url.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/);
