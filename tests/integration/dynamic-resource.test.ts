@@ -36,11 +36,12 @@
  *      turns ready only after both participants report against the new
  *      resource
  *   5. createDefaultAdapterRegistry: resolves `/video` pages on the
- *      bilibili.com apex and any subdomain, and instantiates via
- *      resolveAdapter; non-video Bilibili pages, unknown, non-http(s) and
- *      unparseable URLs resolve to undefined; a second registration for the
- *      same domain throws AdapterRegistryError 'duplicate-domain' (after
- *      normalization) without leaving partial state
+ *      bilibili.com apex and any subdomain and youtube.com `/watch` pages
+ *      with a `v=` parameter, and instantiates via resolveAdapter;
+ *      non-video Bilibili pages, unknown, non-http(s) and unparseable URLs
+ *      resolve to undefined; a second registration for the same domain
+ *      throws AdapterRegistryError 'duplicate-domain' (after normalization)
+ *      without leaving partial state
  *   6. a CLIENT-initiated resource-bind: any joined participant may switch
  *      the session media, not just the host. The identity-less client binds
  *      BV2 over an actively playing session: both endpoints observe the
@@ -711,7 +712,7 @@ test('a paused actual-state report against a ready authority is consistent: no d
   assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV1, 'the authority must stay bound to BV1');
 });
 
-test('the default adapter registry resolves Bilibili pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {
+test('the default adapter registry resolves Bilibili and YouTube pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {
   const registry = createDefaultAdapterRegistry();
 
   // Bilibili routing: the apex, www, and any subdomain — but only on /video
@@ -726,6 +727,11 @@ test('the default adapter registry resolves Bilibili pages, refuses unknown URLs
   const bareVideo = registry.resolve('https://www.bilibili.com/video');
   assert.equal(bareVideo?.adapterId, 'bilibili', 'the bare /video path must resolve to the bilibili adapter');
 
+  // YouTube routing: a watch page with a v= parameter resolves; other
+  // YouTube pages never do.
+  const watch = registry.resolve('https://youtube.com/watch?v=abc123');
+  assert.equal(watch?.adapterId, 'youtube', 'a youtube.com watch page must resolve to the youtube adapter');
+
   // resolveAdapter instantiates the syncer for a matching page environment.
   const adapter = registry.resolveAdapter({ location: { href: 'https://www.bilibili.com/video/BV1xx411c7mD' } });
   assert.ok(adapter, 'resolveAdapter must instantiate a syncer for a Bilibili page');
@@ -733,7 +739,6 @@ test('the default adapter registry resolves Bilibili pages, refuses unknown URLs
 
   // Unknown and unusable URLs never resolve (and never throw).
   assert.equal(registry.resolve('https://example.com/video/BV1xx411c7mD'), undefined, 'unknown domains must resolve to undefined');
-  assert.equal(registry.resolve('https://youtube.com/watch?v=abc123'), undefined, 'other video sites must resolve to undefined');
   assert.equal(registry.resolve('https://live.bilibili.com/12345'), undefined, 'a non-video Bilibili page must resolve to undefined');
   assert.equal(registry.resolve('https://sub.bilibili.com/bangumi/play/ep123'), undefined, 'a non-video Bilibili subdomain page must resolve to undefined');
   assert.equal(registry.resolve('https://www.bilibili.com/videos'), undefined, '/videos must not resolve to the bilibili adapter');
@@ -773,5 +778,5 @@ test('the default adapter registry resolves Bilibili pages, refuses unknown URLs
     (error: unknown) => error instanceof AdapterRegistryError && error.code === 'duplicate-domain',
     'a normalized-equivalent domain must also throw duplicate-domain',
   );
-  assert.equal(registry.size, 1, 'failed registrations must not leave partial registry state');
+  assert.equal(registry.size, 2, 'failed registrations must not leave partial registry state');
 });

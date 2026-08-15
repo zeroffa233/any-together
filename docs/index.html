@@ -1,0 +1,1189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4f0e8">
+  <meta name="description" content="AnyTogether：开源的网页资源同步层。同步资源身份与播放器状态，不搬运媒体。">
+  <title>AnyTogether — 同步网页资源，不搬运媒体</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --paper: #f4f0e8;
+      --paper-deep: #e9e1d4;
+      --ink: #172331;
+      --ink-soft: #536171;
+      --ink-faint: #7b8792;
+      --line: #d8d0c4;
+      --line-dark: #344454;
+      --panel: #203244;
+      --panel-soft: #2b4053;
+      --signal: #ec5c58;
+      --signal-dark: #b93d43;
+      --signal-soft: #f6d7ce;
+      --aqua: #67c3b2;
+      --white: #fffaf3;
+      --panel-text: #d7e0e4;
+      --panel-muted: #b6c3cd;
+      --panel-faint: #9eafba;
+      --panel-code: #d9e5e7;
+      --panel-code-bright: #dbe5e6;
+      --panel-note: #c4d1d5;
+      --panel-strong: #c8d4d8;
+      --panel-soft-text: #d6e0e2;
+      --panel-faded: #718692;
+      --panel-rule: rgba(255, 250, 243, .15);
+      --panel-rule-soft: rgba(255, 250, 243, .14);
+      --panel-rule-faint: rgba(255, 250, 243, .2);
+      --panel-rule-strong: rgba(255, 250, 243, .22);
+      --panel-rule-button: rgba(255, 250, 243, .25);
+      --signal-border: #e6b5a9;
+      --signal-text: #f6a49b;
+      --aqua-text: #9dd9cb;
+      --bluegray: #93a5b1;
+      --code-muted: #899ca9;
+      --terminal-red: #d38d7b;
+      --terminal-yellow: #d6bc77;
+      --terminal-label: #91a4af;
+      --terminal-button: #c6d4d7;
+      --shadow: 0 18px 50px rgba(31, 45, 58, .12);
+      --shadow-small: 0 8px 24px rgba(31, 45, 58, .09);
+      --radius-sm: 8px;
+      --radius-md: 16px;
+      --radius-lg: 28px;
+      --max: 1160px;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --space-8: 32px;
+      --space-10: 40px;
+      --space-12: 48px;
+      --space-16: 64px;
+      --space-20: 80px;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --display: Georgia, "Songti SC", "STSong", serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: var(--sans);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; }
+    :focus-visible {
+      outline: 3px solid var(--signal);
+      outline-offset: 4px;
+    }
+    .skip-link {
+      position: fixed;
+      top: -60px;
+      left: var(--space-4);
+      z-index: 10;
+      padding: var(--space-2) var(--space-4);
+      color: var(--white);
+      background: var(--ink);
+      border-radius: var(--radius-sm);
+      transition: top .2s ease;
+    }
+    .skip-link:focus { top: var(--space-4); }
+    .wrap {
+      width: min(calc(100% - 48px), var(--max));
+      margin: 0 auto;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      color: var(--signal-dark);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .14em;
+      line-height: 1.2;
+      text-transform: uppercase;
+    }
+    .eyebrow::before {
+      width: 20px;
+      height: 2px;
+      content: "";
+      background: currentColor;
+    }
+    .section-heading {
+      max-width: 710px;
+      margin-bottom: var(--space-12);
+    }
+    .section-heading h2 {
+      max-width: 700px;
+      margin: var(--space-4) 0 var(--space-3);
+      font-family: var(--display);
+      font-size: clamp(32px, 5vw, 54px);
+      font-weight: 400;
+      letter-spacing: -.045em;
+      line-height: 1.06;
+    }
+    .section-heading p {
+      max-width: 620px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: 17px;
+    }
+    .topbar {
+      position: relative;
+      z-index: 5;
+      padding: var(--space-6) 0;
+      border-bottom: 1px solid var(--line);
+    }
+    .topbar-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-6);
+    }
+    .brand {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-3);
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: -.01em;
+    }
+    .brand-mark {
+      display: grid;
+      width: 28px;
+      height: 28px;
+      place-items: center;
+      color: var(--white);
+      background: var(--signal);
+      border-radius: 7px;
+      box-shadow: 3px 3px 0 var(--ink);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: -.08em;
+    }
+    .nav {
+      display: flex;
+      align-items: center;
+      gap: var(--space-6);
+      color: var(--ink-soft);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .nav a { transition: color .2s ease; }
+    .nav a:hover { color: var(--signal-dark); }
+    .nav-status {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      color: var(--ink);
+      background: var(--aqua);
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .nav-status::before {
+      width: 7px;
+      height: 7px;
+      content: "";
+      background: var(--ink);
+      border-radius: 50%;
+    }
+    .menu-toggle { display: none; }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      padding: var(--space-20) 0 var(--space-16);
+    }
+    .hero::after {
+      position: absolute;
+      right: -130px;
+      bottom: -180px;
+      width: 420px;
+      height: 420px;
+      content: "";
+      border: 1px solid var(--line);
+      border-radius: 50%;
+      pointer-events: none;
+    }
+    .hero-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.02fr) minmax(380px, .98fr);
+      align-items: center;
+      gap: clamp(var(--space-10), 8vw, var(--space-20));
+    }
+    .hero-copy { position: relative; z-index: 1; }
+    .hero h1 {
+      max-width: 700px;
+      margin: var(--space-5) 0 var(--space-6);
+      font-family: var(--display);
+      font-size: clamp(52px, 8vw, 96px);
+      font-weight: 400;
+      letter-spacing: -.07em;
+      line-height: .98;
+    }
+    .hero h1 em {
+      color: var(--signal);
+      font-style: normal;
+    }
+    .hero-lede {
+      max-width: 590px;
+      margin: 0;
+      color: var(--ink-soft);
+      font-size: clamp(17px, 2vw, 20px);
+      line-height: 1.65;
+    }
+    .hero-lede strong { color: var(--ink); font-weight: 800; }
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-3);
+      margin-top: var(--space-8);
+    }
+    .button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 46px;
+      padding: 0 var(--space-5);
+      border: 1px solid transparent;
+      border-radius: 999px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 800;
+      transition: transform .2s ease, box-shadow .2s ease, background .2s ease;
+    }
+    .button:hover { transform: translateY(-2px); }
+    .button-primary {
+      color: var(--white);
+      background: var(--signal);
+      box-shadow: 4px 4px 0 var(--ink);
+    }
+    .button-primary:hover { background: var(--signal-dark); box-shadow: 2px 2px 0 var(--ink); }
+    .button-secondary { color: var(--ink); border-color: var(--line-dark); }
+    .button-secondary:hover { background: var(--white); }
+    .hero-note {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-3);
+      max-width: 545px;
+      margin-top: var(--space-6);
+      color: var(--ink-faint);
+      font-size: 12px;
+    }
+    .hero-note::before {
+      flex: 0 0 auto;
+      width: 7px;
+      height: 7px;
+      margin-top: var(--space-2);
+      content: "";
+      background: var(--signal);
+      border-radius: 50%;
+    }
+    .hero-visual {
+      position: relative;
+      min-height: 410px;
+      padding: var(--space-8);
+      color: var(--white);
+      background: var(--panel);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow);
+      isolation: isolate;
+    }
+    .hero-visual::before {
+      position: absolute;
+      top: -34px;
+      right: -25px;
+      width: 105px;
+      height: 105px;
+      content: "";
+      border: 1px solid var(--signal);
+      border-radius: 50%;
+      opacity: .8;
+      z-index: -1;
+    }
+    .visual-kicker {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      color: var(--panel-muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .visual-kicker span:last-child { color: var(--aqua); }
+    .relay {
+      display: grid;
+      grid-template-columns: 1fr 38px 1fr;
+      align-items: center;
+      gap: var(--space-3);
+      margin: var(--space-12) 0 var(--space-8);
+    }
+    .player-node {
+      position: relative;
+      min-height: 138px;
+      padding: var(--space-4);
+      border: 1px solid var(--panel-rule-strong);
+      border-radius: var(--radius-md);
+      background: var(--panel-soft);
+    }
+    .node-label {
+      color: var(--panel-muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .node-title { margin-top: var(--space-3); font-size: 17px; font-weight: 800; }
+    .node-line {
+      width: 68%;
+      height: 6px;
+      margin-top: var(--space-4);
+      background: var(--signal);
+      border-radius: 99px;
+    }
+    .node-line.short { width: 42%; margin-top: var(--space-2); background: var(--bluegray); }
+    .relay-arrow { position: relative; height: 1px; background: var(--signal); }
+    .relay-arrow::after {
+      position: absolute;
+      right: 0;
+      top: -4px;
+      width: 8px;
+      height: 8px;
+      content: "";
+      border-top: 1px solid var(--signal);
+      border-right: 1px solid var(--signal);
+      transform: rotate(45deg);
+    }
+    .relay-center {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      display: grid;
+      width: 50px;
+      height: 50px;
+      place-items: center;
+      color: var(--ink);
+      background: var(--aqua);
+      border: 4px solid var(--panel);
+      border-radius: 50%;
+      font-size: 11px;
+      font-weight: 900;
+      text-align: center;
+      transform: translate(-50%, -50%);
+    }
+    .visual-caption {
+      max-width: 315px;
+      margin: 0;
+      color: var(--panel-text);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .visual-caption strong { color: var(--aqua); }
+    .visual-rule {
+      height: 1px;
+      margin: var(--space-5) 0;
+      background: var(--panel-rule);
+    }
+    .visual-foot {
+      display: flex;
+      justify-content: space-between;
+      gap: var(--space-4);
+      color: var(--panel-faint);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .metrics {
+      padding: var(--space-6) 0 var(--space-16);
+    }
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+    }
+    .metric {
+      padding: var(--space-8) var(--space-6);
+      border-right: 1px solid var(--line);
+    }
+    .metric:first-child { padding-left: 0; }
+    .metric:last-child { border-right: 0; }
+    .metric-number {
+      display: block;
+      color: var(--signal-dark);
+      font-family: var(--display);
+      font-size: 50px;
+      letter-spacing: -.06em;
+      line-height: 1;
+    }
+    .metric-label { display: block; margin-top: var(--space-3); font-size: 15px; font-weight: 800; }
+    .metric-note { display: block; margin-top: var(--space-2); color: var(--ink-faint); font-size: 12px; }
+
+    .section { padding: var(--space-20) 0; }
+    .section-tint { background: var(--paper-deep); }
+    .workflow-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      overflow: hidden;
+      background: var(--line);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+    .workflow-card {
+      min-height: 270px;
+      padding: var(--space-8);
+      background: var(--paper);
+    }
+    .step {
+      display: inline-flex;
+      width: 31px;
+      height: 31px;
+      align-items: center;
+      justify-content: center;
+      color: var(--white);
+      background: var(--ink);
+      border-radius: 50%;
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    .workflow-card h3 { margin: var(--space-10) 0 var(--space-3); font-size: 20px; letter-spacing: -.03em; }
+    .workflow-card p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+    .workflow-card code, code { color: var(--signal-dark); font-family: var(--mono); font-size: .88em; }
+
+    .architecture {
+      display: grid;
+      grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+      align-items: start;
+      gap: var(--space-16);
+    }
+    .architecture-intro p { max-width: 470px; color: var(--ink-soft); font-size: 16px; }
+    .architecture-list { margin: var(--space-8) 0 0; padding: 0; list-style: none; }
+    .architecture-list li {
+      display: flex;
+      gap: var(--space-3);
+      align-items: flex-start;
+      padding: var(--space-4) 0;
+      border-top: 1px solid var(--line);
+      font-size: 14px;
+    }
+    .architecture-list li::before {
+      flex: 0 0 auto;
+      width: 7px;
+      height: 7px;
+      margin-top: var(--space-2);
+      content: "";
+      background: var(--signal);
+      border-radius: 50%;
+    }
+    .architecture-figure {
+      position: relative;
+      padding: var(--space-8);
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-small);
+    }
+    .figure-title {
+      display: flex;
+      justify-content: space-between;
+      gap: var(--space-3);
+      margin-bottom: var(--space-8);
+      color: var(--ink-faint);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .figure-title span:last-child { color: var(--aqua); font-weight: 800; }
+    .stack { display: grid; gap: var(--space-3); }
+    .stack-row {
+      display: grid;
+      grid-template-columns: 142px 1fr;
+      align-items: center;
+      min-height: 73px;
+      padding: 0 var(--space-4);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-sm);
+    }
+    .stack-row strong { font-size: 14px; }
+    .stack-row span { color: var(--ink-soft); font-size: 12px; }
+    .stack-row.highlight { background: var(--signal-soft); border-color: var(--signal-border); }
+    .stack-row.highlight strong { color: var(--signal-dark); }
+    .stack-connector {
+      height: 20px;
+      margin-left: var(--space-6);
+      border-left: 1px dashed var(--signal);
+    }
+    .figure-note {
+      margin: var(--space-6) 0 0;
+      padding: var(--space-4);
+      color: var(--ink-soft);
+      background: var(--paper);
+      border-left: 3px solid var(--aqua);
+      font-size: 13px;
+    }
+
+    .support-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: var(--space-4);
+    }
+    .support-card {
+      display: flex;
+      min-height: 220px;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: var(--space-8);
+      background: var(--white);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+    .support-card.current { background: var(--panel); border-color: var(--panel); color: var(--white); }
+    .support-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+    .site-mark {
+      display: grid;
+      width: 42px;
+      height: 42px;
+      place-items: center;
+      color: var(--white);
+      background: var(--signal);
+      border-radius: 12px;
+      font-weight: 900;
+    }
+    .support-card:not(.current) .site-mark { color: var(--ink); background: var(--aqua); }
+    .status {
+      display: inline-flex;
+      padding: var(--space-1) var(--space-2);
+      border-radius: 999px;
+      color: var(--signal-dark);
+      background: var(--signal-soft);
+      font-size: 11px;
+      font-weight: 900;
+    }
+    .current .status { color: var(--ink); background: var(--aqua); }
+    .support-card h3 { margin: var(--space-6) 0 var(--space-2); font-size: 23px; letter-spacing: -.04em; }
+    .support-card p { max-width: 465px; margin: 0; color: var(--ink-soft); font-size: 14px; }
+    .current p { color: var(--panel-text); }
+    .capability-list { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-6); }
+    .capability {
+      padding: var(--space-1) var(--space-2);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--ink-soft);
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .current .capability { border-color: var(--panel-rule-strong); color: var(--panel-soft-text); }
+    .scope-note {
+      margin: var(--space-6) 0 0;
+      color: var(--ink-faint);
+      font-size: 12px;
+    }
+
+    .contribute {
+      display: grid;
+      grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+      gap: var(--space-16);
+      align-items: start;
+    }
+    .contribute-intro p { max-width: 410px; color: var(--ink-soft); font-size: 16px; }
+    .contract {
+      overflow: hidden;
+      background: var(--panel);
+      border-radius: var(--radius-md);
+      color: var(--white);
+      box-shadow: var(--shadow);
+    }
+    .contract-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+      padding: var(--space-5) var(--space-6);
+      border-bottom: 1px solid var(--panel-rule);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .contract-head span:last-child { color: var(--aqua); }
+    .contract-body { padding: var(--space-6); }
+    .contract pre {
+      overflow-x: auto;
+      margin: 0;
+      color: var(--panel-code);
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.8;
+    }
+    .syntax-key { color: var(--signal-text); }
+    .syntax-value { color: var(--aqua-text); }
+    .syntax-comment { color: var(--code-muted); }
+    .contract-note {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-3);
+      margin: var(--space-6) 0 0;
+      padding-top: var(--space-5);
+      border-top: 1px solid var(--panel-rule);
+      color: var(--panel-note);
+      font-size: 13px;
+    }
+    .contract-note strong { color: var(--aqua); }
+
+    .roadmap-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-4);
+    }
+    .roadmap-card {
+      position: relative;
+      min-height: 245px;
+      padding: var(--space-8);
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+    }
+    .roadmap-card.active { background: var(--white); border-color: var(--signal); }
+    .roadmap-phase {
+      color: var(--signal-dark);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+    }
+    .roadmap-card h3 { margin: var(--space-5) 0 var(--space-3); font-size: 21px; letter-spacing: -.04em; }
+    .roadmap-card p { margin: 0; color: var(--ink-soft); font-size: 14px; }
+    .roadmap-card ul { margin: var(--space-5) 0 0; padding-left: var(--space-4); color: var(--ink-soft); font-size: 13px; }
+    .roadmap-card li + li { margin-top: var(--space-2); }
+    .roadmap-card.active::after {
+      position: absolute;
+      top: var(--space-6);
+      right: var(--space-6);
+      width: 9px;
+      height: 9px;
+      content: "";
+      background: var(--aqua);
+      border-radius: 50%;
+    }
+    .roadmap-footnote { margin: var(--space-6) 0 0; color: var(--ink-faint); font-size: 12px; }
+
+    .start-grid {
+      display: grid;
+      grid-template-columns: minmax(0, .72fr) minmax(0, 1.28fr);
+      gap: var(--space-8);
+      align-items: start;
+    }
+    .start-copy p { max-width: 390px; color: var(--ink-soft); font-size: 16px; }
+    .start-copy ul { margin: var(--space-6) 0 0; padding-left: var(--space-5); color: var(--ink-soft); font-size: 14px; }
+    .start-copy li + li { margin-top: var(--space-2); }
+    .terminal {
+      overflow: hidden;
+      background: var(--panel);
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow);
+    }
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: var(--space-1);
+      height: 39px;
+      padding: 0 var(--space-4);
+      border-bottom: 1px solid var(--panel-rule-soft);
+    }
+    .terminal-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--terminal-red); }
+    .terminal-dot:nth-child(2) { background: var(--terminal-yellow); }
+    .terminal-dot:nth-child(3) { background: var(--aqua); }
+    .terminal-label { margin-left: auto; color: var(--terminal-label); font-family: var(--mono); font-size: 10px; }
+    .terminal-body { position: relative; padding: var(--space-6); }
+    .terminal pre { overflow-x: auto; margin: 0; color: var(--panel-code-bright); font-family: var(--mono); font-size: 12px; line-height: 2; }
+    .terminal pre .prompt { color: var(--aqua); user-select: none; }
+    .copy-button {
+      position: absolute;
+      top: var(--space-5);
+      right: var(--space-5);
+      padding: var(--space-1) var(--space-2);
+      color: var(--terminal-button);
+      background: transparent;
+      border: 1px solid var(--panel-rule-button);
+      border-radius: 5px;
+      cursor: pointer;
+      font-family: var(--mono);
+      font-size: 10px;
+    }
+    .copy-button:hover { color: var(--white); border-color: var(--aqua); }
+    .disclaimer {
+      margin-top: var(--space-6);
+      padding: var(--space-4) var(--space-5);
+      color: var(--ink-soft);
+      background: var(--paper-deep);
+      border-left: 3px solid var(--signal);
+      font-size: 12px;
+    }
+
+    .closing {
+      padding: var(--space-20) 0 var(--space-16);
+      color: var(--white);
+      background: var(--panel);
+    }
+    .closing-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(250px, .8fr);
+      gap: var(--space-12);
+      align-items: end;
+    }
+    .closing h2 {
+      max-width: 690px;
+      margin: var(--space-4) 0 var(--space-5);
+      font-family: var(--display);
+      font-size: clamp(38px, 6vw, 70px);
+      font-weight: 400;
+      letter-spacing: -.06em;
+      line-height: 1.02;
+    }
+    .closing p { max-width: 620px; margin: 0; color: var(--panel-strong); font-size: 16px; }
+    .closing-aside {
+      padding: var(--space-6);
+      border: 1px solid var(--panel-rule-faint);
+      border-radius: var(--radius-md);
+    }
+    .closing-aside strong { display: block; color: var(--aqua); font-family: var(--mono); font-size: 12px; }
+    .closing-aside span { display: block; margin-top: var(--space-3); color: var(--panel-soft-text); font-size: 14px; }
+    footer {
+      padding: var(--space-6) 0;
+      color: var(--panel-faint);
+      background: var(--panel);
+      border-top: 1px solid var(--panel-rule-soft);
+      font-size: 12px;
+    }
+    .footer-inner { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); }
+    .footer-inner span:last-child { color: var(--panel-faded); text-align: right; }
+
+    [data-reveal] { opacity: 1; transform: none; }
+    .js-ready [data-reveal] { opacity: 0; transform: translateY(14px); transition: opacity .6s ease, transform .6s ease; }
+    .js-ready [data-reveal].is-visible { opacity: 1; transform: none; }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .js-ready [data-reveal] { opacity: 1; transform: none; transition: none; }
+      .button { transition: none; }
+    }
+    @media (max-width: 860px) {
+      .hero-grid, .architecture, .contribute, .start-grid { grid-template-columns: 1fr; }
+      .hero-grid { gap: var(--space-12); }
+      .hero-visual { max-width: 620px; }
+      .architecture, .contribute { gap: var(--space-10); }
+      .closing-grid { grid-template-columns: 1fr; align-items: start; }
+      .closing-aside { max-width: 440px; }
+    }
+    @media (max-width: 650px) {
+      .wrap { width: min(calc(100% - 32px), var(--max)); }
+      .topbar { padding: var(--space-4) 0; }
+      .menu-toggle {
+        display: inline-flex;
+        width: 40px;
+        height: 40px;
+        align-items: center;
+        justify-content: center;
+        color: var(--ink);
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: var(--radius-sm);
+        cursor: pointer;
+        font-size: 0;
+      }
+      .menu-toggle::before, .menu-toggle::after {
+        width: 16px;
+        height: 1px;
+        content: "";
+        background: currentColor;
+        box-shadow: 0 5px 0 currentColor;
+      }
+      .nav {
+        position: absolute;
+        top: 73px;
+        right: 16px;
+        left: 16px;
+        display: none;
+        flex-direction: column;
+        align-items: stretch;
+        gap: 0;
+        padding: var(--space-3);
+        background: var(--white);
+        border: 1px solid var(--line);
+        border-radius: var(--radius-md);
+        box-shadow: var(--shadow-small);
+      }
+      .nav.is-open { display: flex; }
+      .nav a { padding: var(--space-3); }
+      .nav-status { justify-content: center; margin: var(--space-2) var(--space-3) var(--space-3); }
+      .hero { padding: var(--space-16) 0 var(--space-12); }
+      .hero h1 { font-size: clamp(49px, 15vw, 74px); }
+      .hero-visual { min-height: 360px; padding: var(--space-5); }
+      .relay { grid-template-columns: 1fr; gap: var(--space-8); margin: var(--space-10) 0 var(--space-6); }
+      .relay-arrow { display: none; }
+      .relay-center { width: 44px; height: 44px; font-size: 10px; }
+      .player-node { min-height: 102px; }
+      .node-title { margin-top: var(--space-2); }
+      .metric-grid, .workflow-grid, .support-grid, .roadmap-grid { grid-template-columns: 1fr; }
+      .metric { padding: var(--space-6) 0; border-right: 0; border-bottom: 1px solid var(--line); }
+      .metric:last-child { border-bottom: 0; }
+      .section { padding: var(--space-16) 0; }
+      .workflow-card { min-height: auto; padding: var(--space-6); }
+      .workflow-card h3 { margin-top: var(--space-6); }
+      .architecture-figure, .contract-body, .support-card, .roadmap-card { padding: var(--space-6); }
+      .stack-row { grid-template-columns: 1fr; gap: var(--space-1); min-height: 70px; padding: var(--space-3) var(--space-4); }
+      .stack-connector { margin-left: var(--space-5); }
+      .closing { padding: var(--space-16) 0 var(--space-12); }
+      .footer-inner { align-items: flex-start; flex-direction: column; }
+      .footer-inner span:last-child { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到主要内容</a>
+  <header class="topbar">
+    <div class="wrap topbar-inner">
+      <a class="brand" href="#top" aria-label="AnyTogether 首页">
+        <span class="brand-mark" aria-hidden="true">AT</span>
+        <span>AnyTogether</span>
+      </a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">打开导航</button>
+      <nav class="nav" id="site-nav" aria-label="主导航">
+        <a href="#how-it-works">工作流</a>
+        <a href="#support">支持范围</a>
+        <a href="#contribute">贡献同步器</a>
+        <a href="#roadmap">路线图</a>
+        <span class="nav-status">Bilibili + YouTube · 源码支持</span>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="hero" id="top">
+      <div class="wrap hero-grid">
+        <div class="hero-copy" data-reveal>
+          <span class="eyebrow">Open source · Web resource sync</span>
+          <h1>同步网页资源，<em>不搬运媒体。</em></h1>
+          <p class="hero-lede">AnyTogether 把每个网页里的 <strong>资源身份</strong> 和 <strong>播放器状态</strong> 对齐，让大家继续使用自己的原生播放器。媒体留在网页与设备上，网络只传递该同步的状态。</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="#how-it-works">查看工作流 <span aria-hidden="true">↘</span></a>
+            <a class="button button-secondary" href="#quick-start">快速开始</a>
+          </div>
+          <p class="hero-note">当前公开可用范围以仓库实现为准：Bilibili 与 YouTube 视频页（均为 URL 注册 + 自动化测试覆盖）、Node 伴随进程与 MV3 扩展。YouTube 同步器源码已实现并通过自动化测试，但真实 Chrome 与 Mac + Windows 跨设备实机验证尚未完成；这里不把路线图写成生产承诺。</p>
+        </div>
+        <div class="hero-visual" data-reveal aria-label="AnyTogether 状态同步示意图">
+          <div class="visual-kicker"><span>state relay / 01</span><span>no media relay</span></div>
+          <div class="relay">
+            <div class="player-node">
+              <div class="node-label">page A</div>
+              <div class="node-title">原生播放器</div>
+              <div class="node-line"></div>
+              <div class="node-line short"></div>
+            </div>
+            <div class="relay-arrow" aria-hidden="true"></div>
+            <div class="player-node">
+              <div class="node-label">page B</div>
+              <div class="node-title">原生播放器</div>
+              <div class="node-line"></div>
+              <div class="node-line short"></div>
+            </div>
+            <div class="relay-center">状态<br>对齐</div>
+          </div>
+          <p class="visual-caption"><strong>URL identity → authority → actual state</strong><br>每个端点观察自己的媒体，权威端只负责顺序与一致性，不接管媒体内容。</p>
+          <div class="visual-rule"></div>
+          <div class="visual-foot"><span>resource: BV…</span><span>phase: playing</span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="metrics" aria-label="当前验证数字">
+      <div class="wrap metric-grid" data-reveal>
+        <div class="metric">
+          <span class="metric-number">02</span>
+          <span class="metric-label">当前内置同步器</span>
+          <span class="metric-note">Bilibili + YouTube URL 注册 · 其他站点走社区路线</span>
+        </div>
+        <div class="metric">
+          <span class="metric-number">133</span>
+          <span class="metric-label">基线测试通过</span>
+          <span class="metric-note">Node 核心、适配器与真实 WebSocket 集成（7 套件）</span>
+        </div>
+        <div class="metric">
+          <span class="metric-number">06</span>
+          <span class="metric-label">每站能力</span>
+          <span class="metric-note">play · pause · seek · rate · replay · native events（Bilibili 与 YouTube 相同）</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="how-it-works">
+      <div class="wrap">
+        <div class="section-heading" data-reveal>
+          <span class="eyebrow">The workflow</span>
+          <h2>先确认“是哪一个资源”，再同步“现在是什么状态”。</h2>
+          <p>同步器不保存 session、revision 或 command。它只理解一个网页如何映射到统一的资源与媒体语义。</p>
+        </div>
+        <div class="workflow-grid" data-reveal>
+          <article class="workflow-card">
+            <span class="step">01</span>
+            <h3>识别资源身份</h3>
+            <p>从页面 URL 生成可比较的 canonical identity。查询参数、尾部斜杠等不影响同一资源的判断。</p>
+          </article>
+          <article class="workflow-card">
+            <span class="step">02</span>
+            <h3>权威状态排序</h3>
+            <p>Node 伴随进程通过 WebSocket 维护 session、revision 与顺序；它传递播放意图，不传输媒体文件。</p>
+          </article>
+          <article class="workflow-card">
+            <span class="step">03</span>
+            <h3>实际状态回报</h3>
+            <p>页面适配器驱动本地原生播放器，再读取真实结果。漂移、资源不匹配与过渡态会明确反馈。</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tint" aria-labelledby="architecture-title">
+      <div class="wrap architecture">
+        <div class="architecture-intro" data-reveal>
+          <span class="eyebrow">A small, explicit core</span>
+          <h2 id="architecture-title">架构只把该负责的事做好。</h2>
+          <p>页面、同步器、权威层各自拥有清晰边界：站点差异留在 adapter，session 一致性留在 authority。</p>
+          <ul class="architecture-list">
+            <li><span><strong>页面层：</strong>选择确定的 media target，监听原生事件。</span></li>
+            <li><span><strong>同步器：</strong>实现统一 ResourceAdapter 语义，不持有会话状态。</span></li>
+            <li><span><strong>权威层：</strong>检查 identity、revision、phase 与实际状态的一致性。</span></li>
+          </ul>
+        </div>
+        <figure class="architecture-figure" data-reveal>
+          <figcaption class="figure-title"><span>boundary map / runtime</span><span>explicit by design</span></figcaption>
+          <div class="stack">
+            <div class="stack-row">
+              <strong>Browser page</strong>
+              <span>native &lt;video&gt; · observed state</span>
+            </div>
+            <div class="stack-connector" aria-hidden="true"></div>
+            <div class="stack-row highlight">
+              <strong>ResourceAdapter</strong>
+              <span>identify · select · read · apply · subscribe</span>
+            </div>
+            <div class="stack-connector" aria-hidden="true"></div>
+            <div class="stack-row">
+              <strong>SessionAuthority</strong>
+              <span>ordered intents · revision · readiness</span>
+            </div>
+            <div class="stack-connector" aria-hidden="true"></div>
+            <div class="stack-row">
+              <strong>WebSocket transport</strong>
+              <span>state and diagnostics · no media bytes</span>
+            </div>
+          </div>
+          <p class="figure-note">资源切换也是显式的 bind：所有参与者收到同一个新 identity，旧资源的报告不会偷偷推进新状态。</p>
+        </figure>
+      </div>
+    </section>
+
+    <section class="section" id="support">
+      <div class="wrap">
+        <div class="section-heading" data-reveal>
+          <span class="eyebrow">Support, without overclaiming</span>
+          <h2>今天能用什么，和明天想共建什么。</h2>
+          <p>支持范围只反映已经写进实现与测试的能力。网站同步器不是“抓取器”清单，而是一个可审查的社区接口。</p>
+        </div>
+        <div class="support-grid" data-reveal>
+          <article class="support-card current">
+            <div>
+              <div class="support-top"><span class="site-mark">B</span><span class="status">当前支持</span></div>
+              <h3>Bilibili 视频页</h3>
+              <p>覆盖 <code>/video</code> 与 <code>/video/…</code> 页面；同步本地播放器的播放、暂停、跳转、倍速、重播与原生事件。</p>
+              <div class="capability-list" aria-label="Bilibili 能力">
+                <span class="capability">play</span><span class="capability">pause</span><span class="capability">seek</span><span class="capability">set-rate</span><span class="capability">replay</span><span class="capability">native-events</span>
+              </div>
+            </div>
+          </article>
+          <article class="support-card">
+            <div>
+              <div class="support-top"><span class="site-mark">Y</span><span class="status">源码已实现 · 实机验证待补</span></div>
+              <h3>YouTube 视频页</h3>
+              <p>覆盖 <code>/watch</code> 页面（<code>youtube.com</code> 及子域，需非空 <code>v=</code> 参数）；同步器已在 Node 注册表与扩展身份注册表注册，自动化测试覆盖。真实 Chrome、Mac 与 Windows 跨设备验证尚未完成，不宣称生产可用。</p>
+              <div class="capability-list" aria-label="YouTube 能力">
+                <span class="capability">play</span><span class="capability">pause</span><span class="capability">seek</span><span class="capability">set-rate</span><span class="capability">replay</span><span class="capability">native-events</span>
+              </div>
+              <p class="scope-note">其他站点：可按公开契约贡献；仅注册域名不会自动获得同步能力。</p>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="section section-tint" id="contribute">
+      <div class="wrap contribute">
+        <div class="contribute-intro" data-reveal>
+          <span class="eyebrow">Build the next syncer</span>
+          <h2>把站点差异放进同步器，把核心留给所有人。</h2>
+          <p>新同步器只需要实现页面语义；注册表负责 URL 路由与能力声明，核心负责会话一致性。</p>
+          <a class="button button-secondary" href="#quick-start">从本地源码开始 <span aria-hidden="true">↘</span></a>
+        </div>
+        <div class="contract" data-reveal>
+          <div class="contract-head"><span>ResourceAdapter / contract</span><span>stateless by design</span></div>
+          <div class="contract-body">
+            <pre><span class="syntax-key">interface</span> ResourceAdapter {
+  <span class="syntax-key">readonly</span> adapterId: <span class="syntax-value">string</span>;
+  identifyResource(): ResourceIdentity;
+  selectTarget(): <span class="syntax-value">void</span>;
+  readState(): LocalPlaybackState;
+  applyState(target): Promise&lt;AdapterApplyResult&gt;;
+  subscribe(listener): () =&gt; <span class="syntax-value">void</span>;
+}
+
+<span class="syntax-comment">// registration adds adapterId, domain, urlRule,</span>
+<span class="syntax-comment">// create(page) and declared capabilities.</span></pre>
+            <p class="contract-note"><strong>关键：</strong><span>不要在适配器里存 session / revision / command。始终回报页面真实发生了什么。</span></p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" id="roadmap">
+      <div class="wrap">
+        <div class="section-heading" data-reveal>
+          <span class="eyebrow">Roadmap</span>
+          <h2>从可验证的一个站点，走向可维护的同步器社区。</h2>
+          <p>路线图是方向，不是已经交付的能力。每一步都先有明确契约，再有真实页面验证。</p>
+        </div>
+        <div class="roadmap-grid" data-reveal>
+          <article class="roadmap-card active">
+            <span class="roadmap-phase">Now · baseline</span>
+            <h3>稳住同步核心</h3>
+            <p>把资源 identity、authority 与 adapter 边界做成可测试的基础。</p>
+            <ul><li>Bilibili 视频同步器</li><li>动态 resource-bind 与 readiness</li><li>Node + WebSocket + MV3 扩展路径</li></ul>
+          </article>
+          <article class="roadmap-card">
+            <span class="roadmap-phase">Next · verification</span>
+            <h3>把跨站点能力验证清楚</h3>
+            <p>先补真实页面与浏览器生命周期验证，再把已实现的同步器交给更多贡献者使用。</p>
+            <ul><li>YouTube 真实浏览器/跨设备验证</li><li>更多页面生命周期验证</li><li>贡献新同步器的可重复流程</li></ul>
+          </article>
+          <article class="roadmap-card">
+            <span class="roadmap-phase">Later · community</span>
+            <h3>让同步器可共建</h3>
+            <p>形成可审查、可维护、由社区持续验证的站点适配生态。</p>
+            <ul><li>更多独立贡献者与评审</li><li>跨站点的行为测试经验</li><li>发布渠道与运营能力待明确</li></ul>
+          </article>
+        </div>
+        <p class="roadmap-footnote">当前页面不提供未经发布的仓库地址、下载包、许可证或生产部署承诺；这些信息会在正式确定后补充。</p>
+      </div>
+    </section>
+
+    <section class="section section-tint" id="quick-start">
+      <div class="wrap start-grid">
+        <div class="start-copy" data-reveal>
+          <span class="eyebrow">Quick start · local checkout</span>
+          <h2>先在自己的机器上跑通，再讨论规模化。</h2>
+          <p>这是当前仓库的开发者入口。命令来自项目现有 scripts；浏览器扩展暂以本地加载方式使用。</p>
+          <ul>
+            <li>需要 Node.js 22 或更高版本。</li>
+            <li>在仓库根目录执行，先构建并运行现有验证。</li>
+            <li>MV3 扩展目录：<code>extension/</code>（开发者模式加载）。</li>
+          </ul>
+        </div>
+        <div class="terminal" data-reveal>
+          <div class="terminal-bar"><span class="terminal-dot" aria-hidden="true">&#8203;</span><span class="terminal-dot" aria-hidden="true">&#8203;</span><span class="terminal-dot" aria-hidden="true">&#8203;</span><span class="terminal-label">local / any-together</span></div>
+          <div class="terminal-body">
+            <button class="copy-button" type="button" data-copy-target="quick-start-code">复制</button>
+            <pre id="quick-start-code"><span class="prompt">$ </span>npm install
+<span class="prompt">$ </span>npm run build
+<span class="prompt">$ </span>npm test
+<span class="prompt">$ </span>node dist/src/cli/host.js 8765 "https://www.bilibili.com/video/&lt;BV-ID&gt;"
+<span class="prompt">$ </span>node dist/src/cli/client.js ws://&lt;host&gt;:8765 &lt;SESSION_ID&gt; participant-b</pre>
+          </div>
+        </div>
+      </div>
+      <div class="wrap">
+        <p class="disclaimer">命令中的 &lt;BV-ID&gt;、&lt;host&gt; 与 &lt;SESSION_ID&gt; 是占位符，请替换为真实值。局域网连接、浏览器权限与跨设备行为需要在目标环境自行验证；本页不把开发路径描述为已经完成的生产部署。</p>
+      </div>
+    </section>
+
+    <section class="closing">
+      <div class="wrap closing-grid" data-reveal>
+        <div>
+          <span class="eyebrow">A community-shaped project</span>
+          <h2>每一个网页，都可以拥有自己的同步器。</h2>
+          <p>AnyTogether 的愿景不是把所有媒体搬到一个地方，而是让不同网页在尊重原生播放器的前提下，拥有一套可组合、可验证的同步语言。</p>
+        </div>
+        <div class="closing-aside">
+          <strong>START WITH THE CONTRACT</strong>
+          <span>先读 ResourceAdapter 与 SyncerRegistration，再提交真实页面上的行为验证。</span>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap footer-inner">
+      <span>AnyTogether · open-source web resource sync</span>
+      <span>当前页面为项目介绍与开发入口；正式链接、发布包与许可证信息待项目发布时补充。</span>
+    </div>
+  </footer>
+
+  <script>
+    (function () {
+      document.documentElement.classList.add('js-ready');
+
+      var menuButton = document.querySelector('.menu-toggle');
+      var nav = document.getElementById('site-nav');
+      if (menuButton && nav) {
+        menuButton.addEventListener('click', function () {
+          var open = nav.classList.toggle('is-open');
+          menuButton.setAttribute('aria-expanded', String(open));
+          menuButton.textContent = open ? '关闭导航' : '打开导航';
+        });
+        nav.querySelectorAll('a').forEach(function (link) {
+          link.addEventListener('click', function () {
+            nav.classList.remove('is-open');
+            menuButton.setAttribute('aria-expanded', 'false');
+            menuButton.textContent = '打开导航';
+          });
+        });
+      }
+
+      var revealItems = document.querySelectorAll('[data-reveal]');
+      if ('IntersectionObserver' in window) {
+        var observer = new IntersectionObserver(function (entries, instance) {
+          entries.forEach(function (entry) {
+            if (entry.isIntersecting) {
+              entry.target.classList.add('is-visible');
+              instance.unobserve(entry.target);
+            }
+          });
+        }, { rootMargin: '0px 0px -45px' });
+        revealItems.forEach(function (item) { observer.observe(item); });
+      } else {
+        revealItems.forEach(function (item) { item.classList.add('is-visible'); });
+      }
+
+      document.querySelectorAll('[data-copy-target]').forEach(function (button) {
+        button.addEventListener('click', function () {
+          var target = document.getElementById(button.getAttribute('data-copy-target'));
+          if (!target || !navigator.clipboard) return;
+          navigator.clipboard.writeText(target.textContent.trim()).then(function () {
+            var original = button.textContent;
+            button.textContent = '已复制';
+            window.setTimeout(function () { button.textContent = original; }, 1400);
+          }).catch(function () {});
+        });
+      });
+    }());
+  </script>
+</body>
+</html>

@@ -5,7 +5,9 @@
   "description": "连接 any-together Node 伴随进程，在 Bilibili 从机页面执行权威播放状态。",
   "host_permissions": [
     "https://bilibili.com/video/*",
-    "https://*.bilibili.com/video/*"
+    "https://*.bilibili.com/video/*",
+    "https://youtube.com/watch*",
+    "https://*.youtube.com/watch*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -16,7 +18,12 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://bilibili.com/video/*", "https://*.bilibili.com/video/*"],
+      "matches": [
+        "https://bilibili.com/video/*",
+        "https://*.bilibili.com/video/*",
+        "https://youtube.com/watch*",
+        "https://*.youtube.com/watch*"
+      ],
       "js": ["identity.js", "content.js"],
       "run_at": "document_idle"
     }

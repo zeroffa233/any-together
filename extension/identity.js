@@ -213,6 +213,29 @@
     },
   });
 
+  // YouTube: http(s) pages on youtube.com or a *.youtube.com subdomain whose
+  // path is /watch with a non-empty v= query parameter (the parameter may sit
+  // anywhere in the query string; mirrors the manifest content-script scope,
+  // so non-watch pages like the homepage, shorts or feeds are never served).
+  // The video id is the session resource: the canonical identity is rebuilt
+  // from the v parameter alone, so query order, extra parameters (list/t/...)
+  // and the fragment never change it, and every host (youtube.com, www, m,
+  // music) collapses onto https://www.youtube.com/watch?v=<id> — the same
+  // normalization as the Node YoutubeAdapter.
+  register({
+    adapterId: 'youtube',
+    name: 'YouTube',
+    domain: 'youtube.com',
+    // /watch followed by a query string carrying a non-empty v= parameter.
+    urlRule: { source: '^https?://(?:[^/]+\\.)?youtube\\.com/watch\\?(?:[^#]*&)?v=[^&#]+', flags: '' },
+    capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    deriveIdentity(url) {
+      const videoId = url.searchParams.get('v');
+      if (!videoId) return undefined;
+      return { canonicalUrl: `https://www.youtube.com/watch?v=${videoId}`, resourceId: videoId };
+    },
+  });
+
   // --- Public API ----------------------------------------------------------------
 
   global.AnyTogetherIdentity = {

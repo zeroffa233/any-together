@@ -1,5 +1,6 @@
 import type { AdapterCapability, ResourceAdapter } from './resource-adapter.js';
 import { bilibiliRegistration } from './bilibili-adapter.js';
+import { youtubeRegistration } from './youtube-adapter.js';
 
 /**
  * Minimal page environment the registry guarantees to syncer factories.
@@ -218,8 +219,9 @@ function compileRule(rule: AdapterUrlRule | undefined): RegExp | undefined {
 export function createDefaultAdapterRegistry(): AdapterRegistry {
   const registry = new AdapterRegistry();
   registry.register(bilibiliRegistration);
+  registry.register(youtubeRegistration);
   return registry;
 }
 
-/** Default registry: currently serves Bilibili only. */
+/** Default registry: serves Bilibili and YouTube. */
 export const defaultAdapterRegistry = createDefaultAdapterRegistry();
