@@ -16,7 +16,7 @@
  * platform clock can make observable, so each wait polls until its condition
  * holds instead of guessing a latency.
  *
- * Covered scenarios (8):
+ * Covered scenarios (11):
  *   1. authority started without a resource stays unbound (resourceIdentity
  *      null on the wire); playback intents are rejected with 'resource-unbound'
  *      and the state is untouched; the host then binds via `resource-bind`
@@ -60,6 +60,15 @@
  *      promotion, and both endpoints reporting 'paused' opens the readiness
  *      gate ('ready' and 'paused' are the same observable state before
  *      playback starts)
+ *   9. roleHint mutual exclusion: a second joiner declaring the host role is
+ *      rejected with 'host-already-exists' — also while a join is pending —
+ *      and the approved pending client still joins as a client, so the
+ *      session never holds two hosts and the approval flow is unaffected
+ *   10. a joiner declaring the client role on an EMPTY session is rejected
+ *      with 'host-required'; the rejection does not poison the session and
+ *      the normal host-then-client flow still forms and readies
+ *   11. legacy joiners without roleHint keep the first-come assignment: the
+ *      first joiner becomes host, the second becomes client
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -93,6 +102,7 @@ declare global {
 }
 
 type JoinAccepted = Extract<ServerMessage, { type: 'join-accepted' }>;
+type JoinRequest = Extract<ServerMessage, { type: 'join-request' }>;
 type Diagnostic = Extract<ServerMessage, { type: 'diagnostic' }>;
 /** Actual-state report fields a client fills in itself (identity comes from the session). */
 type ActualStateBody = Omit<ActualStateReport, 'type' | 'sessionId' | 'participantId' | 'resourceIdentity' | 'adapterId'>;
@@ -710,6 +720,111 @@ test('a paused actual-state report against a ready authority is consistent: no d
   assert.equal(host.states.length, 1, `no state broadcast may follow a consistent report: ${host.states.map(summarize).join(' -> ')}`);
   assert.equal(client.states.length, 1, 'no state broadcast may reach the client either');
   assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV1, 'the authority must stay bound to BV1');
+});
+
+test('two participants cannot both become host: a second host roleHint is rejected with host-already-exists — also while a join is pending — and the approved client still joins', { timeout: 15000 }, async (t) => {
+  const { authority, url, sessionId } = await startAuthority({ autoAcceptJoins: false });
+  const host = new Harness(url, sessionId, HOST, undefined, 'host');
+  const secondHost = new Harness(url, sessionId, 'host-2', undefined, 'host');
+  const pendingClient = new Harness(url, sessionId, 'client-pending', undefined, 'client');
+  const thirdHost = new Harness(url, sessionId, 'host-3', undefined, 'host');
+  t.after(async () => {
+    await thirdHost.close();
+    await pendingClient.close();
+    await secondHost.close();
+    await host.close();
+    await stopAuthority(authority);
+  });
+
+  // The first joiner declares the host role and is granted it.
+  const hostJoin = await host.connect();
+  assert.equal(hostJoin.role, 'host', 'the first joiner with roleHint host must be granted the host role');
+
+  // A SECOND joiner declaring the host role must be rejected explicitly —
+  // a session can never have two hosts — with a machine-readable reason.
+  await assert.rejects(
+    secondHost.connect(),
+    /host-already-exists/,
+    'a second host roleHint must be rejected with host-already-exists',
+  );
+  assert.equal(authority.participantCount, 1, 'the rejected second host must not occupy a seat');
+
+  // An unapproved joiner is pending (the host receives a join-request) and
+  // holds the client seat; a host roleHint while a join is pending counts as
+  // 'host already exists' and must be rejected with the same precise reason.
+  const { promise: requestPromise, resolve: requestResolve } = Promise.withResolvers<JoinRequest>();
+  host.client.onJoinRequest((message) => requestResolve(message));
+  const pendingConnect = pendingClient.connect();
+  const request = await withTimeout(requestPromise, 5000, 'join-request at the host');
+  assert.equal(request.participantId, 'client-pending', 'the host must be asked about the pending client');
+  await assert.rejects(
+    thirdHost.connect(),
+    /host-already-exists/,
+    'a host roleHint must be rejected with host-already-exists while a join is pending',
+  );
+
+  // The approval flow is unaffected: the host approves the pending client,
+  // which joins as a client, leaving exactly one host in the session.
+  host.client.sendJoinDecision(true);
+  const pendingJoin = await withTimeout(pendingConnect, 5000, 'approval of the pending client');
+  assert.equal(pendingJoin.role, 'client', 'the approved pending joiner must be granted the client role');
+  assert.equal(pendingJoin.state.sessionId, sessionId, 'the approved client must join the same session');
+  assert.equal(authority.participantCount, 2, 'the session must hold exactly host + approved client');
+});
+
+test('a client roleHint on an empty session is rejected with host-required; the session still forms normally afterwards', { timeout: 15000 }, async (t) => {
+  const { authority, url, sessionId } = await startAuthority();
+  const orphanClient = new Harness(url, sessionId, 'client-first', undefined, 'client');
+  const host = new Harness(url, sessionId, HOST, RESOURCE_BV1, 'host');
+  const client = new Harness(url, sessionId, CLIENT, undefined, 'client');
+  t.after(async () => {
+    await client.close();
+    await host.close();
+    await orphanClient.close();
+    await stopAuthority(authority);
+  });
+
+  // No host exists yet: a joiner that declares the client role cannot be
+  // served, so the session rejects it explicitly instead of silently making
+  // it the host or leaving it hanging.
+  await assert.rejects(
+    orphanClient.connect(),
+    /host-required/,
+    'a client roleHint on an empty session must be rejected with host-required',
+  );
+  assert.equal(authority.participantCount, 0, 'the rejected client must not occupy a seat');
+
+  // The rejection does not poison the session: the host joins normally, the
+  // client-after-host flow is unchanged, and the pair still turns ready.
+  const hostJoin = await host.connect();
+  assert.equal(hostJoin.role, 'host', 'the first joiner with roleHint host must be granted the host role');
+  const clientJoin = await client.connect();
+  assert.equal(clientJoin.role, 'client', 'a client roleHint after the host must be granted the client role');
+  host.reportConsistent();
+  client.reportConsistent();
+  const ready = await host.waitForStatus((status) => status.ready, 3000);
+  assert.equal(ready.participants.length, 2, 'the ready session must list host and client');
+  assert.equal(authority.participantCount, 2, 'the session must hold exactly host + client');
+});
+
+test('legacy joiners without roleHint keep the first-come assignment: the first joiner becomes host, the second becomes client', { timeout: 15000 }, async (t) => {
+  const { authority, url, sessionId } = await startAuthority();
+  const first = new Harness(url, sessionId, 'legacy-a');
+  const second = new Harness(url, sessionId, 'legacy-b');
+  t.after(async () => {
+    await second.close();
+    await first.close();
+    await stopAuthority(authority);
+  });
+
+  // No roleHint anywhere: the authority keeps the legacy behavior — the
+  // first participant is granted the host role and the second the client
+  // role, regardless of any declared intent.
+  const firstJoin = await first.connect();
+  assert.equal(firstJoin.role, 'host', 'the first legacy joiner must become the host');
+  const secondJoin = await second.connect();
+  assert.equal(secondJoin.role, 'client', 'the second legacy joiner must become the client');
+  assert.equal(authority.participantCount, 2, 'both legacy joiners must be seated');
 });
 
 test('the default adapter registry resolves Bilibili and YouTube pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {

@@ -5,232 +5,887 @@
   <title>AnyTogether 播放同步</title>
   <style>
     :root {
-      color-scheme: light dark;
+      color-scheme: light;
+      /* Visual tokens — all colors, spacing, radii below come from here. */
+      --color-bg: #f4f7fa;
+      --color-surface: #fffefa;
+      --color-surface-muted: #edf2f5;
+      --color-text: #1d2730;
+      --color-text-muted: #5d6a75;
+      --color-border: #d3dce3;
+      --color-accent: #0b6e99;
+      --color-accent-strong: #085a7e;
+      --color-positive: #28764c;
+      --color-warning: #8c611d;
+      --color-danger: #a34242;
+      --color-info: #356b8a;
+      --color-surface-positive: #e9f2ec;
+      --color-surface-warning: #faf1e0;
+      --color-surface-danger: #f9ecea;
+      --color-surface-info: #e9f1f6;
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 20px;
+      --space-6: 24px;
+      --radius-control: 6px;
+      --radius-panel: 8px;
+      --radius-pill: 999px;
+      --shadow-panel: 0 2px 10px rgb(29 39 48 / 8%);
+      --focus-ring: 0 0 0 2px var(--color-surface), 0 0 0 4px var(--color-accent);
+      --font-stack: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
     }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    [hidden] {
+      display: none !important;
+    }
+
+    html {
+      background: var(--color-bg);
+    }
+
     body {
       width: 360px;
-      margin: 0;
-      padding: 12px;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      margin: 0 auto;
+      padding: var(--space-3) var(--space-4) var(--space-4);
+      background: var(--color-bg);
+      color: var(--color-text);
+      font-family: var(--font-stack);
       font-size: 13px;
-      line-height: 1.5;
+      line-height: 1.45;
+      position: relative;
     }
-    h1 {
-      margin: 0 0 10px;
-      font-size: 15px;
-    }
-    section {
-      margin-bottom: 12px;
-    }
-    .field {
+
+    /* --- header ----------------------------------------------------------- */
+
+    .header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      margin-bottom: 6px;
+      gap: var(--space-2);
+      margin-bottom: var(--space-3);
     }
-    .field > label {
-      flex: 0 0 96px;
-      color: #666;
+
+    .brand {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
     }
-    .mode-switch {
+
+    .brand-sub {
+      font-size: 12px;
+      font-weight: 400;
+      color: var(--color-text-muted);
+      margin-left: var(--space-2);
+    }
+
+    .role-badge {
+      margin-left: auto;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-surface);
+      background: var(--color-accent-strong);
+      padding: var(--space-1) var(--space-3);
+      border-radius: var(--radius-pill);
+      white-space: nowrap;
+    }
+
+    .icon-button {
+      width: 28px;
+      height: 28px;
+      min-height: 28px;
+      padding: 0;
       display: inline-flex;
-      gap: 12px;
-      flex: 1;
+      align-items: center;
+      justify-content: center;
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      color: var(--color-text);
+      font-size: 16px;
+      line-height: 1;
+      cursor: pointer;
     }
+
+    .icon-button:hover:not(:disabled) {
+      background: var(--color-surface-muted);
+    }
+
+    /* --- cards ------------------------------------------------------------ */
+
+    .card {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-panel);
+      box-shadow: var(--shadow-panel);
+      padding: var(--space-4);
+      margin-bottom: var(--space-3);
+    }
+
+    .card-title {
+      margin: 0 0 var(--space-3);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    /* --- form fields ------------------------------------------------------- */
+
+    .role-group {
+      border: 0;
+      padding: 0;
+      margin: 0 0 var(--space-3);
+    }
+
+    .role-group legend {
+      padding: 0;
+      margin-bottom: var(--space-2);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+    }
+
     .radio {
       display: inline-flex;
       align-items: center;
-      gap: 4px;
+      gap: var(--space-1);
+      margin-right: var(--space-4);
       cursor: pointer;
     }
+
     .radio input {
-      accent-color: #00a1d6;
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      accent-color: var(--color-accent);
     }
-    input[type="text"], input[type="number"] {
-      flex: 1;
+
+    .radio:disabled {
+      cursor: default;
+    }
+
+    .field {
+      margin-bottom: var(--space-3);
+    }
+
+    .field > label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: var(--space-1);
+    }
+
+    input[type="text"],
+    input[type="number"] {
+      width: 100%;
       min-width: 0;
-      padding: 4px 6px;
-      border: 1px solid #bbb;
-      border-radius: 4px;
-      font-size: 13px;
-      box-sizing: border-box;
+      padding: var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      font: inherit;
+      color: var(--color-text);
+      background: var(--color-surface);
     }
-    input[readonly] {
-      background: #f0f0f0;
-      color: #555;
+
+    input[readonly],
+    input:disabled {
+      background: var(--color-surface-muted);
+      color: var(--color-text-muted);
+      cursor: default;
     }
+
     .input-group {
-      flex: 1;
       display: flex;
-      gap: 6px;
-      min-width: 0;
+      gap: var(--space-2);
     }
+
     .input-group input {
       flex: 1;
       min-width: 0;
     }
-    .row {
-      display: flex;
-      gap: 8px;
-      margin-top: 8px;
+
+    .field-hint {
+      margin: var(--space-1) 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text-muted);
     }
+
+    .field-error {
+      margin: var(--space-1) 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+
+    /* --- buttons ----------------------------------------------------------- */
+
     button {
-      padding: 5px 12px;
-      border: 1px solid #888;
-      border-radius: 4px;
-      background: #f5f5f5;
+      min-height: 36px;
+      padding: var(--space-2) var(--space-4);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      background: var(--color-surface);
+      color: var(--color-text);
+      font: inherit;
+      font-weight: 600;
       cursor: pointer;
-      font-size: 13px;
     }
+
     button:hover:not(:disabled) {
-      background: #e8e8e8;
+      background: var(--color-surface-muted);
     }
+
     button:disabled {
-      opacity: 0.45;
+      background: var(--color-surface-muted);
+      color: var(--color-text-muted);
       cursor: default;
     }
+
     button.primary {
-      background: #00a1d6;
-      border-color: #00a1d6;
-      color: #fff;
+      background: var(--color-accent);
+      border-color: var(--color-accent);
+      color: var(--color-surface);
     }
+
     button.primary:hover:not(:disabled) {
-      background: #008fbf;
+      background: var(--color-accent-strong);
+      border-color: var(--color-accent-strong);
     }
+
+    button.primary:disabled {
+      background: var(--color-surface-muted);
+      border-color: var(--color-border);
+      color: var(--color-text-muted);
+    }
+
+    button.secondary {
+      background: var(--color-surface);
+    }
+
+    button.danger {
+      border-color: var(--color-danger);
+      color: var(--color-danger);
+      background: var(--color-surface);
+    }
+
+    button.danger:hover:not(:disabled) {
+      background: var(--color-surface-danger);
+    }
+
     button.mini {
-      padding: 4px 8px;
+      min-height: 36px;
+      padding: var(--space-1) var(--space-3);
       font-size: 12px;
       flex: 0 0 auto;
     }
-    .badge {
-      display: inline-block;
-      padding: 2px 8px;
-      border-radius: 10px;
+
+    button.link-button {
+      min-height: auto;
+      padding: 0;
+      border: 0;
+      background: none;
+      color: var(--color-accent);
       font-size: 12px;
-      color: #fff;
-      background: #999;
-      margin-right: 6px;
     }
-    .status-connected { background: #2e9e44; }
-    .status-connecting { background: #d28b00; }
-    .status-error { background: #c83232; }
-    .readiness-ready { background: #2e9e44; }
-    .readiness-pending { background: #d28b00; }
-    .meta {
-      margin-top: 6px;
-      font-size: 12px;
-      color: #666;
-      word-break: break-all;
+
+    button.link-button:hover:not(:disabled) {
+      background: none;
+      color: var(--color-accent-strong);
+      text-decoration: underline;
     }
-    .state {
-      margin-top: 6px;
-      font-variant-numeric: tabular-nums;
+
+    .row {
+      display: flex;
+      gap: var(--space-2);
+      margin-top: var(--space-2);
     }
-    .state-bad {
-      color: #b45309;
+
+    .row > button {
+      flex: 1;
+    }
+
+    /* --- connection banner -------------------------------------------------- */
+
+    .banner {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-3);
+    }
+
+    .status-icon {
+      flex: 0 0 28px;
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-pill);
+      background: var(--color-surface-muted);
+      color: var(--color-text-muted);
+      font-size: 16px;
+      font-weight: 700;
+    }
+
+    .status-icon.state-connecting,
+    .status-icon.state-degraded,
+    .status-icon.state-waiting {
+      color: var(--color-warning);
+      border-color: var(--color-warning);
+      background: var(--color-surface-warning);
+    }
+
+    .status-icon.state-ready {
+      color: var(--color-positive);
+      border-color: var(--color-positive);
+      background: var(--color-surface-positive);
+    }
+
+    .status-icon.state-error {
+      color: var(--color-danger);
+      border-color: var(--color-danger);
+      background: var(--color-surface-danger);
+    }
+
+    .status-icon.state-connected {
+      color: var(--color-info);
+      border-color: var(--color-info);
+      background: var(--color-surface-info);
+    }
+
+    .status-icon.pulse {
+      animation: status-pulse 1.6s ease-in-out infinite;
+    }
+
+    @keyframes status-pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .status-icon.pulse {
+        animation: none;
+      }
+    }
+
+    .status-text {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .status-label {
+      display: block;
+      font-size: 13px;
       font-weight: 600;
     }
-    .join-info {
-      margin-bottom: 6px;
-    }
-    .hidden {
-      display: none;
-    }
-    #notice {
-      display: none;
-      margin-top: 8px;
-      padding: 6px 8px;
-      border: 1px solid #d28b00;
-      border-radius: 4px;
-      background: #fdf3e3;
-      color: #8a6100;
+
+    .status-description {
+      display: block;
+      margin-top: var(--space-1);
       font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text-muted);
+      word-break: break-word;
+    }
+
+    .banner-actions {
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      gap: var(--space-2);
+    }
+
+    .banner-actions button {
+      min-width: 104px;
+      white-space: nowrap;
+    }
+
+    /* --- join approval ------------------------------------------------------ */
+
+    .join-heading {
+      margin: 0 0 var(--space-2);
+      font-weight: 600;
+    }
+
+    /* --- key/value lists ---------------------------------------------------- */
+
+    .kv {
+      margin: 0;
+      display: grid;
+      grid-template-columns: 88px minmax(0, 1fr);
+      gap: var(--space-1) var(--space-2);
+    }
+
+    .kv dt {
+      color: var(--color-text-muted);
+      font-size: 12px;
+      font-weight: 600;
+      padding-top: 1px;
+    }
+
+    .kv dd {
+      margin: 0;
+      min-width: 0;
       word-break: break-all;
     }
-    #notice.visible {
-      display: block;
+
+    .selectable {
+      cursor: text;
+      user-select: text;
     }
-    #diagnostics {
-      color: #8a6100;
+
+    .tabular {
+      font-variant-numeric: tabular-nums;
     }
-    #error {
-      display: none;
-      margin-top: 8px;
-      padding: 6px 8px;
-      border: 1px solid #c83232;
-      border-radius: 4px;
-      background: #fdecec;
-      color: #a02020;
+
+    .muted {
+      color: var(--color-text-muted);
+      font-weight: 400;
       font-size: 12px;
-      word-break: break-all;
     }
-    #error.visible {
-      display: block;
+
+    /* --- participants -------------------------------------------------------- */
+
+    .participant-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
     }
+
+    .participant-row {
+      display: flex;
+      align-items: flex-start;
+      gap: var(--space-3);
+      padding: var(--space-2) 0;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .participant-row:last-child {
+      border-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .participant-icon {
+      flex: 0 0 28px;
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-pill);
+      background: var(--color-surface-muted);
+      color: var(--color-text-muted);
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .participant-icon.ok {
+      color: var(--color-positive);
+      border-color: var(--color-positive);
+      background: var(--color-surface-positive);
+    }
+
+    .participant-icon.bad {
+      color: var(--color-warning);
+      border-color: var(--color-warning);
+      background: var(--color-surface-warning);
+    }
+
+    .participant-body {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .participant-name {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      min-width: 0;
+    }
+
+    .participant-id {
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .pill {
+      flex: 0 0 auto;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-pill);
+      padding: 0 var(--space-2);
+      line-height: 1.5;
+    }
+
+    .pill-self {
+      color: var(--color-accent);
+      border-color: var(--color-accent);
+    }
+
+    .participant-report {
+      margin-top: 2px;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text-muted);
+    }
+
+    .placeholder {
+      margin: 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text-muted);
+    }
+
+    /* --- resource ------------------------------------------------------------ */
+
+    .resource-error {
+      margin: var(--space-2) 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+
     .hint {
-      margin-top: 10px;
-      font-size: 11px;
-      color: #999;
+      margin: var(--space-3) 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text-muted);
+    }
+
+    /* --- notice / error ------------------------------------------------------ */
+
+    .notice,
+    .error {
+      margin-bottom: var(--space-3);
+      padding: var(--space-2) var(--space-3);
+      border-radius: var(--radius-panel);
+      font-size: 12px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .notice {
+      border: 1px solid var(--color-warning);
+      background: var(--color-surface-warning);
+      color: var(--color-warning);
+    }
+
+    .error {
+      border: 1px solid var(--color-danger);
+      background: var(--color-surface-danger);
+      color: var(--color-danger);
+    }
+
+    /* --- loading ------------------------------------------------------------- */
+
+    .loading-state {
+      padding: var(--space-5) 0;
+      text-align: center;
+      font-size: 12px;
+      color: var(--color-text-muted);
+    }
+
+    /* --- secondary panel ----------------------------------------------------- */
+
+    .secondary-panel {
+      position: absolute;
+      inset: 0;
+      z-index: 10;
+      background: var(--color-bg);
+      padding: var(--space-4);
+      overflow-y: auto;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: var(--space-3);
+    }
+
+    .panel-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .details {
+      background: var(--color-surface);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-panel);
+      margin-bottom: var(--space-2);
+    }
+
+    .details summary {
+      padding: var(--space-3) var(--space-4);
+      font-weight: 600;
+      cursor: pointer;
+      border-radius: var(--radius-control);
+    }
+
+    .details-body {
+      padding: 0 var(--space-4) var(--space-3);
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text);
+    }
+
+    .share-text {
+      margin: 0 0 var(--space-2);
+      word-break: break-all;
+    }
+
+    .future-note {
+      margin: var(--space-3) 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-text-muted);
+    }
+
+    /* --- diagnostic drawer --------------------------------------------------- */
+
+    .diagnostic-head {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      margin-bottom: var(--space-2);
+    }
+
+    .diagnostic-detail {
+      margin: 0 0 var(--space-2);
+      word-break: break-word;
+    }
+
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: var(--space-2);
+      margin: var(--space-2) 0;
+    }
+
+    .compare-col {
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      padding: var(--space-2) var(--space-3);
+      background: var(--color-surface-muted);
+    }
+
+    .compare-col h4 {
+      margin: 0 0 var(--space-1);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-text-muted);
+    }
+
+    .compare-col ul {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .compare-col li {
+      word-break: break-all;
+    }
+
+    .recovery {
+      margin: var(--space-2) 0 0;
+      font-size: 12px;
+      line-height: 1.4;
+      color: var(--color-positive);
+    }
+
+    /* --- focus --------------------------------------------------------------- */
+
+    :focus-visible {
+      outline: none;
+      box-shadow: var(--focus-ring);
+      border-radius: var(--radius-control);
+    }
+
+    /* --- narrow popup -------------------------------------------------------- */
+
+    @media (max-width: 340px) {
+      body {
+        padding: var(--space-2);
+      }
+
+      .banner {
+        flex-direction: column;
+      }
+
+      .banner-actions {
+        flex-direction: column;
+        width: 100%;
+      }
+
+      .banner-actions button {
+        width: 100%;
+      }
+
+      .row {
+        flex-direction: column;
+      }
+
+      .compare {
+        grid-template-columns: 1fr;
+      }
     }
   </style>
 </head>
 <body>
-  <h1>AnyTogether 播放同步</h1>
+  <header class="header">
+    <h1 class="brand">AnyTogether <span class="brand-sub">播放同步</span></h1>
+    <span id="role-badge" class="role-badge" hidden>实际角色 · —</span>
+    <button id="more-button" class="icon-button" type="button" aria-label="更多设置"
+      aria-expanded="false" aria-controls="secondary-panel" title="更多设置">⋯</button>
+  </header>
 
-  <section>
-    <div class="field">
-      <label>模式</label>
-      <span class="mode-switch">
-        <label class="radio"><input type="radio" name="mode" id="modehost" value="host" checked> 主机</label>
-        <label class="radio"><input type="radio" name="mode" id="modeclient" value="client"> 从机</label>
-      </span>
-    </div>
-    <div class="field">
-      <label for="server">服务器地址</label>
-      <input type="text" id="server" value="127.0.0.1">
-    </div>
-    <div class="field">
-      <label for="port">端口</label>
-      <input type="number" id="port" value="8765" min="1" max="65535">
-    </div>
-    <div class="field">
-      <label for="session">Session ID</label>
-      <span class="input-group">
-        <input type="text" id="session" placeholder="自动从本机伴随进程获取">
-        <button id="copysession" class="mini" title="复制共享信息，发送给从机即可加入">复制</button>
-        <button id="localsession" class="mini hidden" title="从本机伴随进程获取 Session 信息">本机获取</button>
-      </span>
-    </div>
-    <div class="field">
-      <label for="participant">参与者 ID</label>
-      <input type="text" id="participant" placeholder="留空自动生成">
-    </div>
-    <div class="row">
-      <button id="connect" class="primary">连接</button>
-      <button id="disconnect">断开</button>
-    </div>
-  </section>
+  <div id="loading-state" class="loading-state" role="status">正在读取会话状态…</div>
 
-  <section>
-    <span id="status" class="badge">未连接</span>
-    <span id="readiness" class="badge hidden">—</span>
-    <div id="sessioninfo" class="meta"></div>
-    <div id="videolink" class="meta"></div>
-    <div id="state" class="state">—</div>
-    <div id="diagnostics" class="meta"></div>
-  </section>
-  <section id="joinrequest" class="hidden">
-    <div id="joinrequest-info" class="join-info"></div>
-    <div class="row">
-      <button id="joinaccept" class="primary">接受</button>
-      <button id="joinreject">拒绝</button>
-    </div>
-  </section>
+  <main id="popup-main">
+    <form id="connect-form" class="card" novalidate>
+      <fieldset class="role-group">
+        <legend>模式</legend>
+        <label class="radio"><input type="radio" name="mode" id="modehost" value="host" checked><span>主机</span></label>
+        <label class="radio"><input type="radio" name="mode" id="modeclient" value="client"><span>从机</span></label>
+      </fieldset>
 
-  <div id="notice"></div>
-  <div id="error"></div>
-  <div class="hint">主机模式连接本机伴随进程（127.0.0.1）并自动获取 Session；从机模式填入主机分享的地址与 Session ID，加入后自动打开权威视频页面。</div>
+      <div class="field">
+        <label for="server" id="label-server">本机伴随进程地址</label>
+        <input type="text" id="server" value="127.0.0.1" readonly autocomplete="off" spellcheck="false">
+        <p class="field-hint" id="hint-server">仅连接本机；Session 由本机伴随进程提供</p>
+        <p class="field-error" id="err-server" role="alert" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="port">WebSocket 端口</label>
+        <input type="number" id="port" value="8765" min="1" max="65535" inputmode="numeric">
+        <p class="field-hint">Session API 使用端口 +1，由后台查询</p>
+        <p class="field-error" id="err-port" role="alert" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="session">Session ID</label>
+        <div class="input-group">
+          <input type="text" id="session" autocomplete="off" spellcheck="false">
+          <button type="button" id="localsession" class="mini" hidden>本机获取</button>
+          <button type="button" id="copysession" class="mini" hidden disabled>复制分享</button>
+        </div>
+        <p class="field-hint" id="hint-session"></p>
+        <p class="field-error" id="err-session" role="alert" hidden></p>
+      </div>
+
+      <div class="field">
+        <label for="participant">参与者 ID（可选）</label>
+        <input type="text" id="participant" placeholder="留空自动生成" autocomplete="off" spellcheck="false">
+      </div>
+    </form>
+
+    <section id="connection-banner" class="card banner" role="status" aria-live="polite" aria-atomic="true">
+      <span id="status-icon" class="status-icon state-disconnected" aria-hidden="true">—</span>
+      <div class="status-text">
+        <strong id="status-label" class="status-label">未连接</strong>
+        <span id="status-description" class="status-description">选择角色并填写必要信息</span>
+      </div>
+      <div class="banner-actions">
+        <button id="connect" type="button" class="primary">连接并创建会话</button>
+        <button id="disconnect" type="button" class="danger" hidden>断开</button>
+        <button id="view-diagnostic" type="button" class="secondary" hidden>查看诊断</button>
+        <button id="switch-role" type="button" class="secondary" hidden></button>
+      </div>
+    </section>
+
+    <section id="join-approval" class="card" aria-labelledby="join-title" hidden>
+      <h2 id="join-title" class="card-title">加入审批</h2>
+      <p class="join-heading">有人请求加入此会话</p>
+      <dl class="kv">
+        <dt>请求者</dt>
+        <dd id="join-requester-id" class="selectable">—</dd>
+        <dt>视频</dt>
+        <dd id="join-requester-resource">—</dd>
+      </dl>
+      <p id="join-processing" class="field-hint" role="status" hidden>正在处理…</p>
+      <div class="row">
+        <button id="joinaccept" type="button" class="primary">接受</button>
+        <button id="joinreject" type="button" class="secondary">拒绝</button>
+      </div>
+    </section>
+
+    <section class="card" aria-labelledby="participants-title">
+      <h2 id="participants-title" class="card-title">参与者（<span id="participants-count">0</span>/2）</h2>
+      <ul id="participant-list" class="participant-list"></ul>
+      <p id="participants-placeholder" class="placeholder">连接后显示参与者</p>
+    </section>
+
+    <section class="card" aria-labelledby="resource-title">
+      <h2 id="resource-title" class="card-title">当前资源</h2>
+      <p id="resource-empty" class="placeholder">尚未绑定资源。主机请在支持的 Bilibili/YouTube 视频页打开或刷新；从机将等待主机共享资源。</p>
+      <div id="resource-body" hidden>
+        <dl class="kv">
+          <dt>站点</dt>
+          <dd id="resource-adapter">—</dd>
+          <dt>链接</dt>
+          <dd id="resource-url" class="selectable">—</dd>
+          <dt>状态</dt>
+          <dd id="resource-phase">—</dd>
+          <dt>位置</dt>
+          <dd id="resource-position" class="tabular">—</dd>
+          <dt>时长</dt>
+          <dd id="resource-duration" class="tabular">—</dd>
+          <dt>倍速</dt>
+          <dd id="resource-rate" class="tabular">—</dd>
+          <dt>修订</dt>
+          <dd id="resource-revision" class="tabular">—</dd>
+        </dl>
+        <p id="resource-error" class="resource-error" hidden>
+          <span id="resource-error-text">媒体状态错误，请返回视频页检查。</span>
+          <button id="open-diagnostic" type="button" class="link-button">打开诊断</button>
+        </p>
+        <p class="hint">播放、暂停、拖动和倍速请在视频页原生播放器操作；popup 不控制播放器。</p>
+      </div>
+    </section>
+
+    <div id="notice" class="notice" role="status" hidden></div>
+    <div id="error" class="error" role="alert" hidden></div>
+  </main>
+
+  <section id="secondary-panel" class="secondary-panel" aria-label="更多设置" hidden>
+    <div class="panel-header">
+      <h2 class="panel-title">更多设置</h2>
+      <button id="panel-close" type="button" class="icon-button" aria-label="关闭设置" title="关闭（Esc）">×</button>
+    </div>
+    <details class="details" id="details-diagnostic">
+      <summary>诊断</summary>
+      <div id="diagnostic-body" class="details-body">暂无诊断记录</div>
+    </details>
+    <details class="details" id="details-connection">
+      <summary>连接详情</summary>
+      <dl id="connection-details" class="kv details-body"></dl>
+    </details>
+    <details class="details" id="details-share">
+      <summary>分享串详情</summary>
+      <div class="details-body">
+        <p id="share-text" class="share-text selectable">—</p>
+        <button id="copyshare" type="button" class="secondary" disabled>复制分享串</button>
+        <p class="field-hint">发送给从机即可加入。若复制失败，请手动选中上方文本复制。</p>
+      </div>
+    </details>
+    <p class="future-note">未来能力（尚未实现）：整段分享串一键解析、多人会话、多资源/非媒体同步、自动公网发现、账号与聊天。</p>
+  </section>
 
   <script src="popup.js"></script>
 </body>

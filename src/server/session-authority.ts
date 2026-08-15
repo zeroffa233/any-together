@@ -288,7 +288,28 @@ export class SessionAuthority {
   }
 
   private handleJoin(socket: WebSocket, message: ClientJoin): void {
-    const { participantId, resourceIdentity } = message;
+    const { participantId, resourceIdentity, roleHint } = message;
+    // roleHint mutual exclusion: a joiner declaring the client role requires a
+    // host to already exist, and a joiner declaring the host role must be the
+    // very first participant — a session can never have two hosts. An
+    // unapproved (pending) joiner holds the client seat and proves a host is
+    // present, so it counts as 'host already exists' too. These checks run
+    // BEFORE the seat-occupancy check so the reason stays precise when both
+    // conditions would apply. roleHint remains advisory for role ASSIGNMENT:
+    // the authority still grants the first participant the host role and the
+    // second the client role and echoes the decision in join-accepted.role.
+    const hasHost = this.pendingJoin !== undefined
+      || [...this.participants.values()].some((participant) => participant.role === 'host');
+    if (roleHint === 'client' && this.participants.size === 0) {
+      this.send(socket, { type: 'join-rejected', reason: 'host-required' });
+      socket.close(1008, 'host-required');
+      return;
+    }
+    if (roleHint === 'host' && hasHost) {
+      this.send(socket, { type: 'join-rejected', reason: 'host-already-exists' });
+      socket.close(1008, 'host-already-exists');
+      return;
+    }
     // A pending join occupies a seat: the session holds at most two participants.
     const occupied = this.participants.size + (this.pendingJoin === undefined ? 0 : 1);
     if (occupied >= 2) {
@@ -307,9 +328,9 @@ export class SessionAuthority {
     // supplies an identity AND the session already has a bound resource; an
     // identity-less joiner is evaluated later, when it reports its actual
     // state against the pushed session resource, and an unbound session has
-    // nothing to mismatch. The joiner's roleHint is advisory: the authority
-    // still assigns the first participant the host role and the second the
-    // client role, and echoes the decision in join-accepted.role.
+    // nothing to mismatch. roleHint is advisory for the granted role (the
+    // authority assigns roles and echoes them in join-accepted.role), but it
+    // does gate the mutual-exclusion checks above.
     const sessionIdentity = this.state.resourceIdentity;
     if (resourceIdentity !== undefined && sessionIdentity !== null && !isResourceIdentityEqual(resourceIdentity, sessionIdentity)) {
       this.send(socket, { type: 'join-rejected', reason: 'resource-mismatch' });
