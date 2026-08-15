@@ -154,6 +154,17 @@ function setNotice(text) {
 // --- connection lifecycle ----------------------------------------------------
 
 async function connect(options) {
+  // Idempotent lifecycle guard: a repeated connect click must never tear down
+  // a healthy (or in-flight) connection. Only a disconnected or errored
+  // session may start a fresh socket.
+  if (SESSION.status === 'connecting') {
+    return { ok: false, error: '正在连接中，请稍候' };
+  }
+  if (SESSION.status === 'connected') {
+    return { ok: false, error: '已连接，请先断开再重新连接' };
+  }
+  // Reaching this point the session is disconnected or errored: reset any
+  // leftover socket state (disconnect() is idempotent) and build fresh.
   disconnect();
   const mode = options.mode === 'host' ? 'host' : 'client';
   let host = String(options.host ?? '').trim().replace(/^wss?:\/\//, '');
@@ -174,13 +185,36 @@ async function connect(options) {
   if (!host) return { ok: false, error: '缺少服务器地址' };
 
   let sessionId = String(options.sessionId ?? '').trim();
+  if (!sessionId && mode === 'client') return { ok: false, error: '缺少 Session ID' };
+
+  // Claim connecting BEFORE the first await: a second connect message is then
+  // rejected synchronously above and can never slip into the async fetch below
+  // to duplicate or replace this attempt. The popup is notified with the full
+  // target fields once the session id is resolved.
+  SESSION.status = 'connecting';
+  SESSION.mode = mode;
+  SESSION.host = host;
+  SESSION.port = port;
+  SESSION.lastError = null;
+  SESSION.notice = null;
+  SESSION.pendingJoin = null;
+
   if (!sessionId && mode === 'host') {
     // Auto-fetch the real session from the local companion API.
     const local = await fetchLocalSession(host, port);
-    if (!local.ok) return local;
+    // A disconnect during the fetch aborts this attempt: never resume a
+    // cancelled connection.
+    if (SESSION.status !== 'connecting') return { ok: false, error: '连接已取消' };
+    if (!local.ok) {
+      // A failed attempt must not park the session in connecting forever:
+      // report it as a terminal error the user can retry from.
+      SESSION.lastError = local.error;
+      setStatus('error');
+      return local;
+    }
     sessionId = local.sessionId;
   }
-  if (!sessionId) return { ok: false, error: '缺少 Session ID' };
+  SESSION.sessionId = sessionId;
 
   const participantId = String(options.participantId ?? '').trim()
     || `browser-${Math.random().toString(36).slice(2, 10)}`;
@@ -197,20 +231,14 @@ async function connect(options) {
     } catch {
       // No tab context (background-only invocation); join identity-less.
     }
+    if (SESSION.status !== 'connecting') return { ok: false, error: '连接已取消' };
   }
 
-  SESSION.mode = mode;
-  SESSION.host = host;
-  SESSION.port = port;
-  SESSION.sessionId = sessionId;
   SESSION.participantId = participantId;
   SESSION.hostTabId = hostTabId;
   // The authority is authoritative about the resource: SESSION.identity is
   // adopted from join-accepted (or a later resource-bind state), not here.
   SESSION.identity = null;
-  SESSION.lastError = null;
-  SESSION.notice = null;
-  SESSION.pendingJoin = null;
   setStatus('connecting');
 
   let ws;
@@ -294,7 +322,9 @@ function disconnect() {
       // Already closed.
     }
   }
-  setStatus('disconnected');
+  // Idempotent: repeated calls while already disconnected change nothing and
+  // must not re-notify the popup.
+  if (SESSION.status !== 'disconnected') setStatus('disconnected');
 }
 
 // --- wire protocol (src/shared/protocol.ts) ---------------------------------

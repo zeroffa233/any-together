@@ -149,7 +149,15 @@ function renderStatus(info) {
   el.textContent = STATUS_LABELS[info.status] ?? info.status;
   el.className = `badge status-${info.status}`;
 
+  // Connection controls follow the live lifecycle: a fresh socket is only
+  // allowed from disconnected/error, and only a connected session can be torn
+  // down. A reopened popup therefore renders the same button state the
+  // background holds.
   const connected = info.status === 'connected';
+  const connecting = info.status === 'connecting';
+  $('connect').disabled = !(info.status === 'disconnected' || info.status === 'error');
+  $('connect').textContent = connected ? '已连接' : connecting ? '连接中…' : info.status === 'error' ? '重新连接' : '连接';
+  $('disconnect').disabled = !connected;
   let sessionLine = connected
     ? `角色: ${info.role === 'host' ? '主机' : '从机'} · Session: ${info.sessionId} · 参与者: ${info.participantId}`
     : '';
@@ -164,9 +172,11 @@ function renderStatus(info) {
     renderPendingJoin(null);
   }
   // Restore the connection form from live status so a reopened popup is never
-  // empty while the worker still holds the session.
-  if (info.host && (info.status === 'connected' || info.status === 'connecting')) $('server').value = info.host;
-  if (info.port && (info.status === 'connected' || info.status === 'connecting')) $('port').value = String(info.port);
+  // empty while the worker still holds the session — and a failed attempt
+  // keeps its target for a retry.
+  const restorable = connected || connecting || info.status === 'error';
+  if (info.host && restorable) $('server').value = info.host;
+  if (info.port && restorable) $('port').value = String(info.port);
   if (info.sessionId && !$('session').value.trim()) $('session').value = info.sessionId;
   if (info.participantId && !$('participant').value.trim()) $('participant').value = info.participantId;
   $('copysession').disabled = !$('session').value.trim();
@@ -320,6 +330,11 @@ $('connect').addEventListener('click', async () => {
   // Host mode may leave the session empty: the background auto-fetches it
   // from the local companion API. A client needs the host's session id.
   if (mode === 'client' && !sessionId) return showError('请输入主机分享的 Session ID');
+  // Lock the button before the round-trip: the background also rejects
+  // duplicate connects, but its status notification may lag a fast double
+  // click.
+  $('connect').disabled = true;
+  $('connect').textContent = '连接中…';
   const reply = await send({
     type: 'connect',
     mode,
@@ -329,7 +344,15 @@ $('connect').addEventListener('click', async () => {
     sessionId,
     participantId,
   });
-  if (reply && reply.ok === false) showError(reply.error ?? '连接失败');
+  if (reply && reply.ok === false) {
+    showError(reply.error ?? '连接失败');
+    // Restore the button unless a live status notification already did (the
+    // worker is connecting or connected).
+    if (lastStatus !== 'connecting' && lastStatus !== 'connected') {
+      $('connect').disabled = false;
+      $('connect').textContent = lastStatus === 'error' ? '重新连接' : '连接';
+    }
+  }
 });
 
 $('disconnect').addEventListener('click', () => {
