@@ -13,9 +13,11 @@
  *  - host mode: default server 127.0.0.1, auto-fetch the session from the
  *    local companion Session API (http://127.0.0.1:<wsPort+1>/api/session),
  *    derive the session resource from the current active tab and bind it on
- *    join (roleHint 'host'); a host page navigation re-binds the resource via
- *    resource-bind;
+ *    join (roleHint 'host');
  *  - client mode: join with no URL/identity and adopt the pushed resource;
+ *  - either side may switch videos: a host or client page navigation to
+ *    another supported video re-binds the resource via resource-bind and the
+ *    other side follows in its own tab;
  *  - surface pending join requests to the host popup and relay its decision;
  *  - wrap content-script observations (host tab AND client tab) into
  *    ActualStateReport messages — native player content events are the only
@@ -25,9 +27,10 @@
  *    identity with the new revision and re-route; apply states strictly in
  *    revision order on one serialized queue so an older apply can never
  *    overwrite a newer state;
- *  - route authoritative PlaybackState to the tab whose URL matches
- *    resourceIdentity.canonicalUrl (activate it, or open it), waiting for the
- *    route before applying to avoid concurrent tab/apply races.
+ *  - route authoritative PlaybackState to the participant's OWN tab (the host
+ *    tab in host mode, the client tab in client mode), overwriting its URL in
+ *    place — a tab is created only when no reusable page exists — and wait
+ *    for the route before applying to avoid concurrent tab/apply races.
  */
 
 // Shared browser-side syncer identity registry (URL matching, canonical
@@ -47,18 +50,18 @@ const SESSION = {
   sessionId: '',
   participantId: '',
   role: null,
-  hostTabId: null, // the tab the host mode bound the session resource from; its
-  // content-ready identity changes trigger resource-bind
+  hostTabId: null, // host mode's apply target: the tab the host page plays in;
+  // its content-ready identity changes trigger resource-bind
   bindInFlight: null, // resource identity of a resource-bind sent but not yet adopted
   identity: null, // session ResourceIdentity; adopted from join-accepted or a
-  // newer authoritative state after a host resource-bind
+  // newer authoritative state after a participant resource-bind
   latestState: null, // most recent accepted authoritative PlaybackState
   latestStatus: null, // most recent session-status broadcast
   lastDiagnostic: null, // most recent structured diagnostic
   pendingJoin: null, // join-request awaiting the host decision
   nextCommandSeq: 0,
-  clientTabId: null,
-  lastRoutedUrl: null,
+  clientTabId: null, // client mode's apply target; content-ready registrations
+  // and tab takeover keep it pointing at the session page
   lastAppliedRevision: -1,
   applyQueue: Promise.resolve(), // serializes route+apply work
   lastCreateAt: 0, // throttle for repeated tab creation (redirect loops)
@@ -279,7 +282,6 @@ async function connect(options) {
     SESSION.clientTabId = null;
     SESSION.hostTabId = null;
     SESSION.bindInFlight = null;
-    SESSION.lastRoutedUrl = null;
     SESSION.lastAppliedRevision = -1;
     SESSION.role = null;
     SESSION.latestState = null;
@@ -304,7 +306,6 @@ function disconnect() {
   SESSION.clientTabId = null;
   SESSION.hostTabId = null;
   SESSION.bindInFlight = null;
-  SESSION.lastRoutedUrl = null;
   SESSION.lastAppliedRevision = -1;
   SESSION.role = null;
   SESSION.latestState = null;
@@ -404,9 +405,10 @@ function handleServerMessage(raw) {
  * snapshot instead of guessing.
  *
  * The authority is authoritative about the session resource: when a strictly
- * newer state carries a DIFFERENT identity (a host resource-bind switched the
- * video), the new identity is adopted together with the new revision and the
- * apply pipeline re-routes every participant page to the fresh resource.
+ * newer state carries a DIFFERENT identity (a participant resource-bind
+ * switched the video), the new identity is adopted together with the new
+ * revision and the apply pipeline re-routes every participant page to the
+ * fresh resource.
  */
 function acceptAuthoritativeState(state, isSnapshot = false) {
   if (!state || typeof state !== 'object' || !Number.isInteger(state.stateRevision)) return;
@@ -418,8 +420,8 @@ function acceptAuthoritativeState(state, isSnapshot = false) {
   }
   if (state.resourceIdentity === null && SESSION.identity !== null) return; // defensive: no unbind exists
   if (state.resourceIdentity && !IDENTITY.identityEqual(state.resourceIdentity, SESSION.identity)) {
-    // Host switched the session resource: adopt the new identity so routing
-    // and reporting follow the authoritative resource.
+    // A participant switched the session resource: adopt the new identity so
+    // routing and reporting follow the authoritative resource.
     SESSION.identity = state.resourceIdentity;
     if (SESSION.bindInFlight && IDENTITY.identityEqual(SESSION.bindInFlight, SESSION.identity)) {
       SESSION.bindInFlight = null; // the pending bind landed
@@ -440,35 +442,93 @@ function requestSnapshot() {
   }));
 }
 
-// --- tab routing: guide/open the client tab for the canonical URL ------------
+// --- tab routing: keep the participant's own tab on the session resource ---
+
+/**
+ * The participant's own apply target: the host tab in host mode (the page the
+ * host watches from), the client tab in client mode. All routing and applies
+ * go through this single tab, so a session resource switch overwrites the
+ * current page in place instead of piling up extra windows/tabs.
+ */
+function applyTargetTabId() {
+  return SESSION.role === 'host' ? SESSION.hostTabId : SESSION.clientTabId;
+}
+
+function adoptApplyTarget(tabId) {
+  if (SESSION.role === 'host') SESSION.hostTabId = tabId;
+  else SESSION.clientTabId = tabId;
+  SESSION.lastAppliedRevision = -1;
+}
+
+function clearApplyTarget() {
+  if (SESSION.role === 'host') SESSION.hostTabId = null;
+  else SESSION.clientTabId = null;
+  SESSION.lastAppliedRevision = -1;
+}
 
 async function routeCanonical(canonicalUrl) {
   if (!IDENTITY.isSupportedUrl(canonicalUrl)) return; // never open unsupported destinations
 
-  if (SESSION.clientTabId !== null && SESSION.lastRoutedUrl === canonicalUrl) {
-    // The registered tab may have navigated or been closed; re-validate it.
+  // Prefer the participant's own tab and overwrite its URL in place: a
+  // session resource switch (local or remote) must navigate the current page
+  // to the new video, never spawn a new window/tab while a page exists.
+  const ownTabId = applyTargetTabId();
+  if (ownTabId !== null) {
     try {
-      const tab = await chrome.tabs.get(SESSION.clientTabId);
-      if (tab?.url && IDENTITY.deriveIdentity(tab.url)?.canonicalUrl === canonicalUrl) return;
+      const tab = await chrome.tabs.get(ownTabId);
+      if (!tab?.url) throw new Error('no url');
+      if (IDENTITY.deriveIdentity(tab.url)?.canonicalUrl === canonicalUrl) {
+        // Already on the session resource: make it the active page and apply.
+        try {
+          await chrome.tabs.update(ownTabId, { active: true });
+        } catch {
+          // Best-effort; applying state still works on a background tab.
+        }
+        adoptApplyTarget(ownTabId);
+        return;
+      }
+      // Overwrite the participant's own tab with the session resource. The
+      // old page is destroyed by the navigation, so no stale video keeps
+      // playing (no overlapping audio) and no extra tab appears.
+      await chrome.tabs.update(ownTabId, { url: canonicalUrl, active: true });
+      adoptApplyTarget(ownTabId);
+      return;
     } catch {
-      // Tab gone.
+      // Tab gone or not updateable: fall through to a reusable page.
+      clearApplyTarget();
     }
-    SESSION.clientTabId = null;
-    SESSION.lastRoutedUrl = null;
   }
 
-  // Generic tab scan: tabs without host permission expose no url, so
-  // unsupported pages never match; supported pages are found by identity.
-  const tabs = await chrome.tabs.query({});
-  const match = tabs.find(
-    (tab) => tab.id !== undefined && IDENTITY.deriveIdentity(tab.url)?.canonicalUrl === canonicalUrl,
-  );
+  // No (or dead) own tab: reuse an existing supporting page before creating
+  // anything. Prefer the current window, and a page already on the session
+  // resource, then any supporting page (it will be navigated to the resource).
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  const reusable = (tab) => tab.id !== undefined && typeof tab.url === 'string' && IDENTITY.isSupportedUrl(tab.url);
+  const onResource = (tab) => IDENTITY.deriveIdentity(tab.url)?.canonicalUrl === canonicalUrl;
+  let currentWindowId = null;
+  try {
+    const current = await chrome.windows.getCurrent();
+    currentWindowId = current?.id ?? null;
+  } catch {
+    // No window context; scan every window.
+  }
+  const inCurrentWindow = (tab) => currentWindowId === null || tab.windowId === currentWindowId;
+  const match =
+    tabs.find((tab) => reusable(tab) && inCurrentWindow(tab) && onResource(tab))
+    ?? tabs.find((tab) => reusable(tab) && inCurrentWindow(tab))
+    ?? tabs.find((tab) => reusable(tab) && onResource(tab))
+    ?? tabs.find(reusable);
   if (match) {
-    SESSION.clientTabId = match.id;
-    SESSION.lastRoutedUrl = canonicalUrl;
-    SESSION.lastAppliedRevision = -1;
+    adoptApplyTarget(match.id);
     try {
-      await chrome.tabs.update(match.id, { active: true });
+      const update = { active: true };
+      if (!onResource(match)) update.url = canonicalUrl;
+      await chrome.tabs.update(match.id, update);
       if (match.windowId !== undefined) await chrome.windows.update(match.windowId, { focused: true });
     } catch {
       // Guidance is best-effort; applying state still works on a background tab.
@@ -476,6 +536,7 @@ async function routeCanonical(canonicalUrl) {
     return;
   }
 
+  // No reusable page anywhere: only now may the initial tab be created.
   // Throttle repeated creation: a page that redirects away from the canonical
   // URL (login wall, anti-bot) must not cause an unbounded tab-creation loop.
   const now = Date.now();
@@ -485,9 +546,7 @@ async function routeCanonical(canonicalUrl) {
   }
   try {
     const created = await chrome.tabs.create({ url: canonicalUrl });
-    SESSION.clientTabId = created.id;
-    SESSION.lastRoutedUrl = canonicalUrl;
-    SESSION.lastAppliedRevision = -1;
+    adoptApplyTarget(created.id);
     SESSION.lastCreateAt = Date.now();
   } catch (error) {
     SESSION.lastError = `无法打开目标页面: ${error instanceof Error ? error.message : String(error)}`;
@@ -517,39 +576,44 @@ async function routeAndApply() {
   if (SESSION.lastAppliedRevision >= state.stateRevision) return; // already applied
   const canonicalUrl = state.resourceIdentity?.canonicalUrl;
   if (!canonicalUrl || !IDENTITY.isSupportedUrl(canonicalUrl)) return;
-  // Route first, apply only after the client tab is known — never race the two.
+  // Route first, apply only after the apply target is known — never race the two.
   await routeCanonical(canonicalUrl);
-  if (SESSION.clientTabId === null) return;
+  if (applyTargetTabId() === null) return;
   await sendApplyToTab(state);
 }
 
 async function sendApplyToTab(state) {
   const canonicalUrl = state.resourceIdentity?.canonicalUrl;
-  const tabId = SESSION.clientTabId;
+  let tabId = applyTargetTabId();
   if (tabId === null) return;
 
-  // The registered tab may be gone or may have navigated away from the session
+  // The target tab may be gone or may have navigated away from the session
   // resource (SPA navigation): re-route before applying to the wrong page.
   try {
     const tab = await chrome.tabs.get(tabId);
-    if (!tab?.url || IDENTITY.deriveIdentity(tab.url)?.canonicalUrl !== canonicalUrl) {
-      SESSION.clientTabId = null;
-      SESSION.lastRoutedUrl = null;
-      SESSION.lastAppliedRevision = -1;
-      setNotice('客户端页面已离开会话视频，正在重新打开目标页面');
+    if (!tab?.url) throw new Error('no url');
+    const tabIdentity = IDENTITY.deriveIdentity(tab.url);
+    if (tabIdentity?.canonicalUrl !== canonicalUrl) {
+      if (tabIdentity) {
+        // The page shows a DIFFERENT supported video: the participant just
+        // switched videos and its content-ready is about to re-bind the
+        // session (or already did). Do not fight the switch — the broadcast
+        // state will re-route both sides. Apply nothing to the foreign page.
+        return;
+      }
+      // Unsupported/blank page: navigate it back to the session resource.
       await routeCanonical(canonicalUrl);
-      if (SESSION.clientTabId === null) return;
+      if (applyTargetTabId() === null) return;
     }
   } catch {
-    SESSION.clientTabId = null;
-    SESSION.lastRoutedUrl = null;
-    SESSION.lastAppliedRevision = -1;
+    clearApplyTarget();
     await routeCanonical(canonicalUrl);
-    if (SESSION.clientTabId === null) return;
+    if (applyTargetTabId() === null) return;
   }
 
+  tabId = applyTargetTabId();
   try {
-    await chrome.tabs.sendMessage(SESSION.clientTabId, { type: 'apply-state', state });
+    await chrome.tabs.sendMessage(tabId, { type: 'apply-state', state });
     SESSION.lastAppliedRevision = state.stateRevision;
     if (SESSION.notice) setNotice(null);
   } catch {
@@ -593,12 +657,13 @@ function sendActualStateReport(snapshot, applyResult, error, fromHost = false) {
   if (!snapshot || typeof snapshot !== 'object') return;
   // The page's own snapshot identity is authoritative for its report: a page
   // that drifted to another resource must not contaminate the session's
-  // actual state. The client page is rejected loudly; the HOST page's
-  // identity legitimately changes while its resource-bind is in flight, so
-  // those transient reports are dropped silently (the authority re-judges
-  // once the bind lands).
+  // actual state. Either side's identity legitimately changes while its own
+  // resource-bind is in flight (the authority re-judges once the bind lands),
+  // so those transient reports are dropped silently; any other mismatch is
+  // rejected loudly.
   const identity = snapshot.identity;
   if (identity && !IDENTITY.identityEqual(identity, SESSION.identity)) {
+    if (SESSION.bindInFlight && IDENTITY.identityEqual(SESSION.bindInFlight, identity)) return;
     if (fromHost) return;
     SESSION.lastError = '页面报告与实际会话资源不一致，已忽略该报告';
     setStatus(SESSION.status);
@@ -623,13 +688,14 @@ function sendActualStateReport(snapshot, applyResult, error, fromHost = false) {
 }
 
 /**
- * Host-only resource (re)binding: the host page switched to another video and
- * the session must follow. Only an already-accepted host may send this; the
- * authority bumps the revision, resets the playhead for the fresh resource
- * and broadcasts the new state to every participant.
+ * Resource (re)binding: the participant's current page switched to another
+ * video and the session must follow. Any joined participant — host or client —
+ * may send this; the authority bumps the revision, resets the playhead for
+ * the fresh resource and broadcasts the new state to every participant, and
+ * each side then navigates its own existing tab to the new resource.
  */
 function sendResourceBind(identity) {
-  if (!identity || SESSION.role !== 'host' || SESSION.status !== 'connected' || !SESSION.ws) return false;
+  if (!identity || SESSION.status !== 'connected' || !SESSION.ws) return false;
   // Dedupe: an identical bind request already in flight (content-ready and tab
   // activation can both observe the same navigation). The identity is adopted
   // only after the authority's broadcast round-trip, so compare against the
@@ -662,13 +728,12 @@ function stopKeepalive() {
 }
 
 /**
- * Adopt a tab as the session's client tab and re-trigger the apply pipeline.
- * Shared by the content-ready handler and the stale-tab takeover path.
+ * Adopt a tab as the session's apply target and re-trigger the apply pipeline.
+ * Shared by the content-ready handler and the tab-takeover path. In host mode
+ * the apply target is the host tab; in client mode it is the client tab.
  */
-function registerClientTab(tabId, hasVideo) {
-  SESSION.clientTabId = tabId;
-  SESSION.lastRoutedUrl = SESSION.identity ? SESSION.identity.canonicalUrl : null;
-  SESSION.lastAppliedRevision = -1;
+function registerApplyTarget(tabId, hasVideo) {
+  adoptApplyTarget(tabId);
   if (hasVideo === false) {
     setNotice('目标页面暂无可播放视频，等待视频就绪');
   } else if (hasVideo === true && SESSION.notice) {
@@ -680,34 +745,34 @@ function registerClientTab(tabId, hasVideo) {
 // --- tab lifecycle --------------------------------------------------------------
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  // The host's media-source tab is gone: stop pinning it so the next tab the
-  // host activates (or opens) can re-bind the session resource.
-  if (tabId === SESSION.hostTabId) SESSION.hostTabId = null;
-  if (tabId !== SESSION.clientTabId) return;
-  // The socket, session, latest state, identity and status all survive: only
-  // the routing to the dead tab is invalid. Clearing it lets a fresh page's
-  // content-ready re-register and re-apply; while the page is gone, re-route
-  // the latest state so the client page comes back.
-  SESSION.clientTabId = null;
-  SESSION.lastRoutedUrl = null;
-  SESSION.lastAppliedRevision = -1;
+  // The apply-target tab is gone: drop it so a fresh page's content-ready
+  // re-registers and re-applies; while the page is gone, re-route the latest
+  // state so the session page comes back. The socket, session, latest state,
+  // identity and status all survive.
+  if (tabId !== applyTargetTabId()) return;
+  clearApplyTarget();
   SESSION.notice = null;
   enqueueApply();
 });
 
 chrome.tabs.onActivated.addListener((info) => {
-  // The host's ACTIVE tab is the session's media-source candidate: switching
-  // tabs switches the resource. The identity comparison makes this a no-op
-  // for already-bound pages (and for the routed client tab, which carries the
-  // same canonical identity).
-  if (SESSION.role !== 'host' || SESSION.status !== 'connected') return;
-  SESSION.hostTabId = info.tabId;
+  // The participant's ACTIVE tab is its media-source candidate: switching to
+  // another video tab switches the session resource. The identity comparison
+  // makes this a no-op for already-bound pages (and for the apply target,
+  // which carries the same canonical identity). Either side may switch.
+  if (SESSION.status !== 'connected' || SESSION.role === null) return;
+  if (info.tabId === applyTargetTabId()) return;
   chrome.tabs.get(info.tabId)
     .then((tab) => {
-      if (SESSION.hostTabId !== info.tabId || !tab?.url) return; // switched again / no url
+      if (!tab?.url) return; // switched again / no url
       const identity = IDENTITY.deriveIdentity(tab.url);
-      if (identity && (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity))) {
+      if (!identity) return; // an unsupported page never binds the resource
+      adoptApplyTarget(info.tabId);
+      if (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity)) {
         sendResourceBind(identity);
+      } else {
+        // Same resource in a fresh tab/window: take it over and re-apply.
+        enqueueApply();
       }
     })
     .catch(() => {});
@@ -824,75 +889,52 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const tabId = sender.tab?.id;
       if (tabId === undefined || SESSION.status !== 'connected') return undefined;
       const identity = message.identity ?? null;
+      const isOwnTab = tabId === applyTargetTabId();
+      const isActivePage = sender.tab?.active === true;
 
-      // Host mode: the session's media source is the HOST tab. Some sites open
-      // videos in a fresh window/tab; when that new page is the CURRENT active
-      // page it takes over hostTabId (tabs.onActivated would do the same, but
-      // content-ready can arrive first), and an identity change re-binds the
-      // session resource. A superseded or background page never steals the role.
-      if (SESSION.role === 'host') {
-        if (tabId === SESSION.hostTabId) {
-          // The HOST's own page drives the session resource: whenever its
-          // identity changes (SPA navigation to another video), re-bind the
-          // session. The authority bumps the revision and every participant
-          // re-routes to the fresh resource. No client registration here —
-          // routeCanonical picks the host tab up as the apply target when it
-          // matches the session resource.
-          if (identity && (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity))) {
-            sendResourceBind(identity);
-          }
-          return undefined;
+      // Either side may switch videos: a page carrying a supported identity
+      // different from the session resource re-binds it, so the other side
+      // follows in its own tab. Only the participant's own apply-target tab
+      // or a freshly activated page (new window/tab) may do this; a
+      // superseded or background page never steals the role.
+      if (identity && (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity))) {
+        if (isOwnTab || isActivePage) {
+          adoptApplyTarget(tabId);
+          sendResourceBind(identity);
         }
-        if (sender.tab?.active === true) {
-          // New window/tab is the current active page: take over as the host
-          // tab. Fall through so a page matching the session resource also
-          // becomes the apply target; the identity guards below decide.
-          SESSION.hostTabId = tabId;
-          if (identity && (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity))) {
-            sendResourceBind(identity);
-          }
-        }
+        return undefined;
       }
 
-      if (!identity || !IDENTITY.identityEqual(identity, SESSION.identity)) {
-        // A page registered for a different resource than the session. The
-        // client tab itself navigating away (SPA or user) re-routes back to
-        // the authoritative URL; any other page is ignored.
-        if (tabId === SESSION.clientTabId) {
-          SESSION.clientTabId = null;
-          SESSION.lastRoutedUrl = null;
-          SESSION.lastAppliedRevision = -1;
-          setNotice('客户端页面已离开会话视频，正在重新打开目标页面');
+      // Unsupported/blank page: only matters when it is the current apply
+      // target — dropping it lets routing re-open the session page.
+      if (!identity) {
+        if (isOwnTab) {
+          clearApplyTarget();
+          setNotice('当前页面已离开会话视频，正在重新打开目标页面');
           enqueueApply();
         }
         return undefined;
       }
 
-      if (SESSION.clientTabId !== null && SESSION.clientTabId !== tabId) {
-        // A different tab registered for the same session resource. Some sites
-        // open the video in a fresh window/tab, so the newcomer must win even
-        // while the old window still exists: the most recently registered page
-        // becomes the client tab. The superseded tab's later events
-        // (actual-state/user-intent/apply-result) are ignored because its
-        // sender tab id no longer matches SESSION.clientTabId (nor the host
-        // tab), and its close/onRemoved only affects routing while it is still
-        // the registered client tab.
-        registerClientTab(tabId, message.hasVideo);
-        return undefined;
-      }
-
-      registerClientTab(tabId, message.hasVideo);
+      // The page carries the session resource identity: it becomes the apply
+      // target (a new window/tab with the same resource takes over — we never
+      // create an extra one) and the apply pipeline re-runs for that tab. The
+      // superseded page's later events are ignored because its sender tab id
+      // no longer matches the apply target.
+      registerApplyTarget(tabId, message.hasVideo);
       return undefined;
     }
     case 'actual-state': {
-      // Native player content events are the only intent source: both the
-      // host page (the session's media source) and the client page report.
-      if (sender.tab?.id !== SESSION.clientTabId && sender.tab?.id !== SESSION.hostTabId) return undefined;
-      sendActualStateReport(message.snapshot, 'applied', undefined, sender.tab?.id === SESSION.hostTabId);
+      // Native player content events are the only intent source: only the
+      // participant's own apply-target tab (host tab in host mode, client tab
+      // in client mode) may report — old/superseded pages never affect the
+      // session.
+      if (sender.tab?.id !== applyTargetTabId()) return undefined;
+      sendActualStateReport(message.snapshot, 'applied', undefined, SESSION.role === 'host');
       return undefined;
     }
     case 'user-intent': {
-      if (sender.tab?.id !== SESSION.clientTabId && sender.tab?.id !== SESSION.hostTabId) return undefined;
+      if (sender.tab?.id !== applyTargetTabId()) return undefined;
       try {
         sendIntent(message.kind, message.payload);
       } catch {
@@ -901,7 +943,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return undefined;
     }
     case 'apply-result': {
-      if (sender.tab?.id !== SESSION.clientTabId && sender.tab?.id !== SESSION.hostTabId) return undefined;
+      if (sender.tab?.id !== applyTargetTabId()) return undefined;
       if (message.result !== 'applied') {
         SESSION.lastError = `页面执行失败 (${message.result}): ${message.error ?? '未知错误'}`;
         setStatus(SESSION.status);
@@ -909,7 +951,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         SESSION.lastError = null;
         setStatus(SESSION.status);
       }
-      sendActualStateReport(message.snapshot, message.result, message.error, sender.tab?.id === SESSION.hostTabId);
+      sendActualStateReport(message.snapshot, message.result, message.error, SESSION.role === 'host');
       return undefined;
     }
     default:

@@ -16,7 +16,7 @@
  * platform clock can make observable, so each wait polls until its condition
  * holds instead of guessing a latency.
  *
- * Covered scenarios (5):
+ * Covered scenarios (6):
  *   1. authority started without a resource stays unbound (resourceIdentity
  *      null on the wire); playback intents are rejected with 'resource-unbound'
  *      and the state is untouched; the host then binds via `resource-bind`
@@ -40,6 +40,13 @@
  *      and unparseable URLs resolve to undefined; a second registration for
  *      the same domain throws AdapterRegistryError 'duplicate-domain' (after
  *      normalization) without leaving partial state
+ *   6. a CLIENT-initiated resource-bind: any joined participant may switch
+ *      the session media, not just the host. The identity-less client binds
+ *      BV2 over an actively playing session: both endpoints observe the
+ *      identical reset state (revision/sequence bump, phase ready, playhead
+ *      0) and can report against the NEW identity to open the readiness
+ *      gate; an old-identity report at the new revision can neither promote
+ *      a phase nor move the playhead and is diagnosed as a mismatch
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -479,6 +486,89 @@ test('actual-state reports bound to the old resource can neither promote a phase
   assert.ok(readyClient, 'the re-reporting client must appear in the ready status');
   assert.equal(readyClient.reported, true, 'the re-reporting client must be reported');
   assert.equal(readyClient.consistent, true, 'the re-reporting client must be consistent against the new resource');
+  assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV2, 'the authority state must stay bound to the new resource');
+});
+
+test('a client resource-bind switches the session resource: any joined participant may bind, both endpoints reset to the new identity, and an old-identity report cannot promote state', { timeout: 15000 }, async (t) => {
+  const { authority, url, sessionId } = await startAuthority({ resourceIdentity: RESOURCE_BV1, durationSeconds: 600 });
+  const host = new Harness(url, sessionId, HOST, RESOURCE_BV1, 'host');
+  const client = new Harness(url, sessionId, CLIENT, undefined, 'client');
+  t.after(async () => {
+    await client.close();
+    await host.close();
+    await stopAuthority(authority);
+  });
+
+  const hostJoin = await host.connect();
+  assert.equal(hostJoin.role, 'host', 'the first joiner with roleHint host must be granted the host role');
+  assert.equal(hostJoin.state.durationSeconds, 600, 'the pre-bind session must know the configured duration');
+  await client.connect();
+  assert.deepEqual(client.latest.resourceIdentity, RESOURCE_BV1, 'the identity-less client adopts the initial resource');
+
+  // Put the session into a non-trivial position first so the reset is
+  // observable: a seek to 30s freezes positionSeconds at 30 (revision 1).
+  host.submit('seek', { targetSeconds: 30 });
+  const sought = await host.waitForRevision(1);
+  assert.equal(sought.positionSeconds, 30, `the seek must move the playhead: ${summarize(sought)}`);
+  await client.waitForRevision(1);
+
+  // The CLIENT — not the host — switches to a SECOND Bilibili identity:
+  // resource-bind is open to any joined participant.
+  client.bind(RESOURCE_BV2);
+  const boundClient = await client.waitForRevision(2);
+  const boundHost = await host.waitForRevision(2);
+
+  assert.deepEqual(boundClient.resourceIdentity, RESOURCE_BV2, 'the binding client must receive the switched identity');
+  assert.deepEqual(boundHost.resourceIdentity, RESOURCE_BV2, 'the host must follow the client-initiated switch');
+  assert.equal(boundClient.stateRevision, 2, `the bind must bump the revision past prior intents: ${summarize(boundClient)}`);
+  assert.equal(boundClient.lastSequence, 2, 'the bind must bump the sequence past prior intents');
+  assert.equal(boundClient.mediaPhase, 'ready', 'the bind must reset the phase to ready');
+  assert.equal(boundClient.positionSeconds, 0, `the bind must reset the playhead to 0: ${summarize(boundClient)}`);
+  assert.equal(boundClient.playbackRate, 1, 'the bind must reset the playback rate');
+  assert.equal(boundClient.durationSeconds, null, `the bind must drop the known duration: ${summarize(boundClient)}`);
+  assert.equal(boundClient.lastCommandId, null, 'the bind must clear the last command');
+  assert.deepEqual(boundClient, boundHost, 'both participants must observe the identical switched state');
+  assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV2, 'the authority must adopt the client-bound identity');
+
+  // Both endpoints — the host and the identity-less client — can report
+  // against the NEW identity: the readiness gate opens at the new revision.
+  host.reportConsistent();
+  client.reportConsistent();
+  const ready = await host.waitForStatus((status) => status.ready && status.stateRevision === 2, 3000);
+  const readyClient = ready.participants.find((participant) => participant.participantId === CLIENT);
+  assert.ok(readyClient, 'the reporting client must appear in the ready status');
+  assert.equal(readyClient.reported, true, 'the client must be reported against the new identity');
+  assert.equal(readyClient.consistent, true, 'the client must be consistent against the new identity');
+
+  // An OLD-identity report at the NEW revision must not promote into the
+  // newly bound resource's state: the stale page cannot flip the phase to
+  // 'ended' nor move the playhead, and no state broadcast may follow.
+  client.reportConsistent({
+    observedRevision: 2,
+    resourceIdentity: RESOURCE_BV1,
+    mediaPhase: 'ended',
+    positionSeconds: 42,
+    applyResult: 'applied',
+  });
+  await host.waitForDiagnostic(
+    (message) => message.code === 'actual-state-mismatch' && message.participantId === CLIENT,
+    3000,
+  );
+  assert.equal(host.latest.stateRevision, 2, 'an old-identity report must not promote a phase');
+  assert.equal(host.latest.mediaPhase, 'ready', `the new resource must stay ready: ${summarize(host.latest)}`);
+  assert.deepEqual(host.latest.resourceIdentity, RESOURCE_BV2, 'the old-identity report must not change the bound identity');
+  assert.equal(host.latest.positionSeconds, 0, 'the old-identity report must not move the playhead');
+  assert.equal(host.states.length, 3, `host must have exactly join+seek+bind states: ${host.states.map(summarize).join(' -> ')}`);
+  assert.equal(client.states.length, 3, `client must have exactly join+seek+bind states: ${client.states.map(summarize).join(' -> ')}`);
+  const desync = await host.waitForStatus(
+    (status) => status.ready === false && status.reason === 'actual-state-desync',
+    3000,
+  );
+  assert.equal(desync.stateRevision, 2, 'the desync status must be against the new revision');
+  const desyncClient = desync.participants.find((participant) => participant.participantId === CLIENT);
+  assert.ok(desyncClient, 'the old-identity reporter must appear in the status');
+  assert.equal(desyncClient.reported, true, 'the old-identity report must be counted as reported');
+  assert.equal(desyncClient.consistent, false, 'the old-identity report must be judged inconsistent');
   assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV2, 'the authority state must stay bound to the new resource');
 });
 

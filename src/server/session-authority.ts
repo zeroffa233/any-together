@@ -45,7 +45,7 @@ export type AuthorityOptions = {
    * Optional: the session's media resource. When absent the session starts
    * UNBOUND — state.resourceIdentity is null and playback intents are rejected
    * with 'resource-unbound' — until the first host join carries an identity or
-   * a joined host sends `resource-bind`. When present, joins advertising a
+   * a joined participant sends `resource-bind`. When present, joins advertising a
    * different identity are rejected with 'resource-mismatch'.
    */
   resourceIdentity?: ResourceIdentity;
@@ -99,7 +99,7 @@ export class SessionAuthority {
     this.state = createInitialPlaybackState(
       this.sessionId,
       // No identity: the session starts unbound and is bound by the first
-      // host join's identity or by a host `resource-bind`.
+      // host join's identity or by a participant `resource-bind`.
       options.resourceIdentity ?? null,
       Date.now(),
       this.durationSeconds,
@@ -412,20 +412,18 @@ export class SessionAuthority {
   }
 
   /**
-   * Host-only resource (re)binding. A joined host switches the session media
-   * with `resource-bind`: the bind bumps revision and sequence, resets the
-   * playhead and phase for the fresh resource, clears stored actual-state
-   * reports (old-page reports can neither be judged against nor promote into
-   * the new resource), and broadcasts the new state plus session status.
+   * Participant resource (re)binding. Any joined participant — host or client —
+   * switches the session media with `resource-bind`: the bind bumps revision
+   * and sequence, resets the playhead and phase for the fresh resource, clears
+   * stored actual-state reports (old-page reports can neither be judged
+   * against nor promote into the new resource), and broadcasts the new state
+   * plus session status. Either side may switch videos; the other side follows
+   * in its own tab. join-decision remains host-only.
    */
   private handleResourceBind(socket: WebSocket, message: ResourceBindMessage): void {
     const participant = this.participants.get(socket);
     if (!participant || participant.id !== message.participantId) {
       this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
-      return;
-    }
-    if (participant.role !== 'host') {
-      this.send(socket, { type: 'error', code: 'not-host', message: 'Only the host may bind the session resource' });
       return;
     }
     const nowMs = Date.now();
