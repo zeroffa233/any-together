@@ -35,10 +35,11 @@
  *      readiness gate (actual-state-mismatch diagnostics instead); the session
  *      turns ready only after both participants report against the new
  *      resource
- *   5. createDefaultAdapterRegistry: resolves the bilibili.com apex, any
- *      subdomain, and instantiates via resolveAdapter; unknown, non-http(s)
- *      and unparseable URLs resolve to undefined; a second registration for
- *      the same domain throws AdapterRegistryError 'duplicate-domain' (after
+ *   5. createDefaultAdapterRegistry: resolves `/video` pages on the
+ *      bilibili.com apex and any subdomain, and instantiates via
+ *      resolveAdapter; non-video Bilibili pages, unknown, non-http(s) and
+ *      unparseable URLs resolve to undefined; a second registration for the
+ *      same domain throws AdapterRegistryError 'duplicate-domain' (after
  *      normalization) without leaving partial state
  *   6. a CLIENT-initiated resource-bind: any joined participant may switch
  *      the session media, not just the host. The identity-less client binds
@@ -575,14 +576,17 @@ test('a client resource-bind switches the session resource: any joined participa
 test('the default adapter registry resolves Bilibili pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {
   const registry = createDefaultAdapterRegistry();
 
-  // Bilibili routing: apex domain, www subdomain, and any other subdomain.
+  // Bilibili routing: the apex, www, and any subdomain — but only on /video
+  // pages; other Bilibili paths never resolve.
   const apex = registry.resolve('https://bilibili.com/video/BV1xx411c7mD');
   assert.ok(apex, 'the apex bilibili.com domain must resolve');
   assert.equal(apex.adapterId, 'bilibili', 'the apex domain must route to the bilibili adapter');
   const www = registry.resolve('https://www.bilibili.com/video/BV1xx411c7mD?p=2');
   assert.equal(www?.adapterId, 'bilibili', 'www.bilibili.com must resolve to the bilibili adapter');
-  const subdomain = registry.resolve('https://sub.bilibili.com/bangumi/play/ep123');
-  assert.equal(subdomain?.adapterId, 'bilibili', 'any *.bilibili.com subdomain must resolve to the bilibili adapter');
+  const live = registry.resolve('https://live.bilibili.com/video/12345');
+  assert.equal(live?.adapterId, 'bilibili', 'a *.bilibili.com subdomain on a /video path must resolve to the bilibili adapter');
+  const bareVideo = registry.resolve('https://www.bilibili.com/video');
+  assert.equal(bareVideo?.adapterId, 'bilibili', 'the bare /video path must resolve to the bilibili adapter');
 
   // resolveAdapter instantiates the syncer for a matching page environment.
   const adapter = registry.resolveAdapter({ location: { href: 'https://www.bilibili.com/video/BV1xx411c7mD' } });
@@ -592,9 +596,14 @@ test('the default adapter registry resolves Bilibili pages, refuses unknown URLs
   // Unknown and unusable URLs never resolve (and never throw).
   assert.equal(registry.resolve('https://example.com/video/BV1xx411c7mD'), undefined, 'unknown domains must resolve to undefined');
   assert.equal(registry.resolve('https://youtube.com/watch?v=abc123'), undefined, 'other video sites must resolve to undefined');
+  assert.equal(registry.resolve('https://live.bilibili.com/12345'), undefined, 'a non-video Bilibili page must resolve to undefined');
+  assert.equal(registry.resolve('https://sub.bilibili.com/bangumi/play/ep123'), undefined, 'a non-video Bilibili subdomain page must resolve to undefined');
+  assert.equal(registry.resolve('https://www.bilibili.com/videos'), undefined, '/videos must not resolve to the bilibili adapter');
+  assert.equal(registry.resolve('https://www.bilibili.com/video.html'), undefined, '/video.html must not resolve to the bilibili adapter');
   assert.equal(registry.resolve('ftp://bilibili.com/video/BV1xx411c7mD'), undefined, 'non-http(s) URLs must resolve to undefined');
   assert.equal(registry.resolve('not a url at all'), undefined, 'unparseable URLs must resolve to undefined');
   assert.equal(registry.resolveAdapter({ location: { href: 'https://example.com/' } }), undefined, 'resolveAdapter must return undefined off-domain');
+  assert.equal(registry.resolveAdapter({ location: { href: 'https://live.bilibili.com/12345' } }), undefined, 'resolveAdapter must return undefined for a non-video Bilibili page');
 
   // A second syncer claiming the same registrable domain is a hard conflict.
   assert.throws(

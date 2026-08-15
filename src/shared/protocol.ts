@@ -33,6 +33,17 @@ export function isMediaPhase(value: unknown): value is MediaPhase {
 export const BILIBILI_HOST_PATTERN = /(^|\.)bilibili\.com$/;
 
 /**
+ * Path pattern for Bilibili VIDEO pages: the path must be exactly `/video` or
+ * start with `/video/`; any other path (`/`, `/watch/...`, `/bangumi/...`) is
+ * not a video page. Written as a full-URL pattern tolerant of a query/hash
+ * directly after the `/video` segment, so one definition serves the
+ * serialized registry `AdapterUrlRule` (tested against the raw page href),
+ * the canonical identity URLs (origin + query/hash-free pathname), and the
+ * Bilibili identity guard alike.
+ */
+export const BILIBILI_VIDEO_PATH_PATTERN = /^https?:\/\/[^/]+\/video(?:\/|[?#]|$)/;
+
+/**
  * True when the value is an `http(s)` URL whose host is `bilibili.com` or a
  * subdomain of it. This is the Bilibili-specific acceptance level for resource
  * identities (the canonical form is an `http(s)://*.bilibili.com/.../video/...`
@@ -98,13 +109,14 @@ export function isValidResourceIdentity(value: unknown): value is ResourceIdenti
 /**
  * Bilibili-specific identity guard for the first release's entrypoints: a
  * structurally valid identity whose canonicalUrl is an `http(s)` URL on a
- * bilibili.com subdomain. Use this anywhere the Bilibili CLI/authority must
- * reject foreign resources; the generic `isValidResourceIdentity` accepts any
+ * bilibili.com subdomain with a `/video` or `/video/...` path. Use this
+ * anywhere the Bilibili CLI/authority must reject foreign resources AND
+ * non-video Bilibili pages; the generic `isValidResourceIdentity` accepts any
  * site so the core stays adapter-agnostic.
  */
 export function isBilibiliResourceIdentity(value: unknown): value is ResourceIdentity {
   if (!isValidResourceIdentity(value)) return false;
-  return isBilibiliUrl(value.canonicalUrl);
+  return isBilibiliUrl(value.canonicalUrl) && BILIBILI_VIDEO_PATH_PATTERN.test(value.canonicalUrl);
 }
 
 /**

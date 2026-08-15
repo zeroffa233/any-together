@@ -470,12 +470,12 @@ describe('createBilibiliResourceIdentity', () => {
     assert.equal(id.resourceId, 'BV1xx411c7mD');
   });
 
-  it('omits resourceId for non-video paths', () => {
-    const id = createBilibiliResourceIdentity('https://www.bilibili.com/');
+  it('omits resourceId for a /video page without a BV segment', () => {
+    const id = createBilibiliResourceIdentity('https://www.bilibili.com/video');
     assert.equal(id.adapterId, 'bilibili');
-    assert.equal(id.canonicalUrl, 'https://www.bilibili.com');
+    assert.equal(id.canonicalUrl, 'https://www.bilibili.com/video');
     assert.equal(id.resourceId, undefined);
-    assert.equal(isBilibiliResourceIdentity(id), true, 'a non-video Bilibili page must still satisfy the site gate');
+    assert.equal(isBilibiliResourceIdentity(id), true, 'a /video page without a BV segment must still satisfy the site gate');
   });
 
   it('rejects non-Bilibili hosts and non-http schemes with not-bilibili', () => {
@@ -502,9 +502,30 @@ describe('createBilibiliResourceIdentity', () => {
     );
   });
 
-  it('accepts the bare domain and bilibili subdomains as valid identities', () => {
+  it('accepts the bare domain and bilibili subdomains on /video paths as valid identities', () => {
     assert.equal(isBilibiliResourceIdentity(createBilibiliResourceIdentity('https://bilibili.com/video/BV1xx411c7mD')), true);
+    assert.equal(isBilibiliResourceIdentity(createBilibiliResourceIdentity('https://live.bilibili.com/video/12345')), true);
     assert.equal(isBilibiliResourceIdentity(createBilibiliResourceIdentity('https://m.bilibili.com/video/BV1xx411c7mD')), true);
+  });
+
+  it('rejects non-video Bilibili pages (root, subdomain, /videos, /video.html) with not-bilibili', () => {
+    const nonVideo = [
+      'https://www.bilibili.com/',
+      'https://live.bilibili.com/12345',
+      'https://www.bilibili.com/videos',
+      'https://www.bilibili.com/video.html',
+    ];
+    for (const href of nonVideo) {
+      assert.throws(
+        () => createBilibiliResourceIdentity(href),
+        (error: unknown) => error instanceof ResourceIdentityError && error.code === 'not-bilibili',
+        `${href} must be rejected as not-bilibili`,
+      );
+    }
+    // The site guard mirrors the constructor's video-path policy at identity level.
+    assert.equal(isBilibiliResourceIdentity({ adapterId: 'bilibili', canonicalUrl: 'https://www.bilibili.com/videos' }), false);
+    assert.equal(isBilibiliResourceIdentity({ adapterId: 'bilibili', canonicalUrl: 'https://www.bilibili.com/video.html' }), false);
+    assert.equal(isBilibiliResourceIdentity({ adapterId: 'bilibili', canonicalUrl: 'https://live.bilibili.com/12345' }), false);
   });
 
   it('treats raw and normalized locations as the same identity', () => {

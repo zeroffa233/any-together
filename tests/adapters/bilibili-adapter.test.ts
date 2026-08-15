@@ -178,22 +178,34 @@ test('identifyResource returns a normalized Bilibili identity', () => {
   assert.equal(trailingSlash.resourceId, 'BV1xx411c7mD');
   assert.equal(isBilibiliResourceIdentity(trailingSlash), true, 'a normalized identity must satisfy the Bilibili site gate');
 
-  const subdomain = new BilibiliAdapter(makePage([], 'https://m.bilibili.com/video/BV1xx411c7mD')).identifyResource();
-  assert.equal(subdomain.canonicalUrl, 'https://m.bilibili.com/video/BV1xx411c7mD');
-  assert.equal(subdomain.resourceId, 'BV1xx411c7mD');
+  const subdomain = new BilibiliAdapter(makePage([], 'https://live.bilibili.com/video/12345')).identifyResource();
+  assert.equal(subdomain.canonicalUrl, 'https://live.bilibili.com/video/12345');
+  assert.ok(!('resourceId' in subdomain), 'a /video page without a BV segment carries no resourceId');
   assert.equal(isBilibiliResourceIdentity(subdomain), true, 'a subdomain identity must satisfy the Bilibili site gate');
 });
 
-test('identifyResource omits resourceId for pages without a BV video path', () => {
-  const root = new BilibiliAdapter(makePage([], 'https://www.bilibili.com/')).identifyResource();
-  assert.equal(root.canonicalUrl, 'https://www.bilibili.com');
-  assert.ok(!('resourceId' in root));
-  assert.equal(isBilibiliResourceIdentity(root), true, 'a bare Bilibili page must still satisfy the Bilibili site gate');
+test('identifyResource omits resourceId for a /video page without a BV segment', () => {
+  const bareVideo = new BilibiliAdapter(makePage([], 'https://www.bilibili.com/video')).identifyResource();
+  assert.equal(bareVideo.canonicalUrl, 'https://www.bilibili.com/video');
+  assert.ok(!('resourceId' in bareVideo));
+  assert.equal(isBilibiliResourceIdentity(bareVideo), true, 'a /video page without a BV segment must satisfy the Bilibili site gate');
+});
 
-  const live = new BilibiliAdapter(makePage([], 'https://live.bilibili.com/12345')).identifyResource();
-  assert.equal(live.canonicalUrl, 'https://live.bilibili.com/12345');
-  assert.ok(!('resourceId' in live));
-  assert.equal(isBilibiliResourceIdentity(live), true, 'a Bilibili subdomain page must still satisfy the Bilibili site gate');
+test('identifyResource rejects non-video Bilibili pages with not-bilibili', () => {
+  const nonVideoPages = [
+    'https://www.bilibili.com/',
+    'https://live.bilibili.com/12345',
+    'https://sub.bilibili.com/bangumi/play/ep123',
+    'https://www.bilibili.com/videos',
+    'https://www.bilibili.com/video.html',
+  ];
+  for (const href of nonVideoPages) {
+    const error = assertAdapterSiteError(
+      'not-bilibili',
+      () => new BilibiliAdapter(makePage([], href)).identifyResource(),
+    );
+    assert.match(error.message, /not a Bilibili video page/);
+  }
 });
 
 test('identifyResource rejects hosts that are not Bilibili with not-bilibili', () => {

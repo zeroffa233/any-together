@@ -194,13 +194,18 @@
 
   // --- Built-in syncers --------------------------------------------------------
 
-  // Bilibili: any http(s) page on bilibili.com or a *.bilibili.com subdomain.
-  // The BV id is preserved as resourceId when the path carries a /video/BV…
-  // segment; it stays undefined for Bilibili pages that are not BV videos.
+  // Bilibili: http(s) pages on bilibili.com or a *.bilibili.com subdomain whose
+  // path starts with /video or /video/… (mirrors the manifest content-script
+  // scope, so non-video pages like the homepage, search or user spaces are
+  // never served). The BV id is preserved as resourceId when the path carries
+  // a /video/BV… segment; it stays undefined for /video pages without a BV.
   register({
     adapterId: 'bilibili',
     name: 'Bilibili',
     domain: 'bilibili.com',
+    // Path must start with /video (next char /, query, hash or end of URL);
+    // anchored at the scheme so embedded "/video" segments never match.
+    urlRule: '^https?://[^/]*/video(/|$|[?#])',
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
     deriveIdentity(url) {
       const match = url.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/);

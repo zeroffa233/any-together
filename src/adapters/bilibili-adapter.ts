@@ -1,5 +1,5 @@
 import { AdapterSiteError, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
-import type { MediaPhase, ResourceIdentity } from '../shared/protocol.js';
+import { BILIBILI_VIDEO_PATH_PATTERN, type MediaPhase, type ResourceIdentity } from '../shared/protocol.js';
 import { createBilibiliResourceIdentity } from '../shared/resource.js';
 import type { AdapterPage, SyncerRegistration } from './adapter-registry.js';
 
@@ -75,6 +75,9 @@ export class BilibiliAdapter implements ResourceAdapter {
     }
     if (!BILIBILI_HOST_PATTERN.test(url.hostname)) {
       throw new AdapterSiteError('not-bilibili', `Page host ${url.hostname} is not a Bilibili site`);
+    }
+    if (!BILIBILI_VIDEO_PATH_PATTERN.test(`${url.origin}${url.pathname}`)) {
+      throw new AdapterSiteError('not-bilibili', `Page URL ${href} is not a Bilibili video page`);
     }
     // Same normalization as the CLI's createBilibiliResourceIdentity: origin +
     // slash-trimmed pathname, plus the BV id when the path carries one.
@@ -279,15 +282,21 @@ export class BilibiliAdapter implements ResourceAdapter {
 }
 
 /**
- * Registry contract for the Bilibili syncer: any http(s) page on bilibili.com
- * or a *.bilibili.com subdomain resolves here. The adapter itself narrows
- * further to playable video pages at `selectTarget` time, mirroring the
- * shared host-level identity rules.
+ * Registry contract for the Bilibili syncer: an http(s) page on bilibili.com
+ * or a *.bilibili.com subdomain whose path is `/video` or `/video/...`.
+ * Other Bilibili pages do not resolve to this syncer; the adapter's
+ * `identifyResource` enforces the same video-path rule at identity time,
+ * mirroring the shared identity guards.
  */
 export const bilibiliRegistration: SyncerRegistration = {
   adapterId: 'bilibili',
   name: 'Bilibili',
   domain: 'bilibili.com',
+  // Serialized full-URL rule (source + flags survive JSON / structured clone):
+  // only `/video` and `/video/...` pages match, so `resolve` never hands
+  // non-video Bilibili pages to this syncer. The source is shared with the
+  // identity guards, so the registry rule and identity policy cannot drift.
+  urlRule: { source: BILIBILI_VIDEO_PATH_PATTERN.source },
   create: (page: AdapterPage) => {
     const document = page.document as BilibiliDocument | undefined;
     return new BilibiliAdapter(
