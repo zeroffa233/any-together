@@ -14,8 +14,8 @@
 | `_bmad-output/implementation-artifacts/development-plan.md` | 首版开发计划与验证分层（L0–L4） |
 | `_bmad-output/implementation-artifacts/spec-lan-bilibili-sync.md` | Bilibili 局域网同步实现规格 |
 | `docs/syncers/overview.md`、`docs/syncers/authoring.md`、`docs/syncers/protocol.md` | 同步器规范（本波次交付）：边界、编写指南、线协议与一致性语义。当前规范只覆盖媒体（MediaPhase/playhead/playbackRate/duration，单资源每会话）；非媒体标量（滚动/PDF）在其中标记为未来能力，与本文档 Phase 3 对齐 |
-| `docs/old_designs/1.md`、`docs/old_designs/2.md` | 仅用于反推需求边界，不是技术路线依据，禁止修改 |
-| `docs/index.html` | 社区介绍首页（本波次交付），Phase 4 社区形态的种子 |
+| 历史架构归档 | 已清理；当前规范以本目录同步器文档和源码为准。 |
+| 项目介绍首页 | 暂不维护，后续重新设计时再补。 |
 
 ## 1. 现状基线（Phase 0 起点，全部 `[已落地]`）
 
