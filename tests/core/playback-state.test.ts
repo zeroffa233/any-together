@@ -1,5 +1,6 @@
 /**
- * Behavior tests for the playback state machine (src/core/playback-state.ts) and
+ * Behavior tests for the playback state machine (src/core/playback-state.ts), the
+ * report-consistency evaluation it feeds (src/core/consistency-monitor.ts), and
  * Bilibili resource identity normalization (src/shared/resource.ts).
  *
  * All clocks are injected as fixed millisecond timestamps; the suite is pure and
@@ -16,6 +17,11 @@ import {
   restorePlaybackState,
   StateTransitionError,
 } from '../../src/core/playback-state.js';
+import {
+  arePhasesReadinessEquivalent,
+  evaluateActualState,
+  POSITION_DRIFT_THRESHOLD_MS,
+} from '../../src/core/consistency-monitor.js';
 import { createBilibiliResourceIdentity, ResourceIdentityError } from '../../src/shared/resource.js';
 import {
   isBilibiliResourceIdentity,
@@ -26,7 +32,7 @@ import {
   MAX_PLAYBACK_RATE,
   resourceIdentityFingerprint,
 } from '../../src/shared/protocol.js';
-import type { PlaybackIntent, PlaybackState } from '../../src/shared/protocol.js';
+import type { ActualStateReport, PlaybackIntent, PlaybackState } from '../../src/shared/protocol.js';
 
 const SESSION_ID = 'session-1';
 const T0 = 1_000_000;
@@ -404,6 +410,81 @@ describe('applyIntent', () => {
     assert.deepEqual(revisions, [1, 2, 3, 4, 5]);
     assert.equal(state.stateRevision, 5);
     assert.equal(state.lastSequence, 5);
+  });
+});
+
+describe('consistency evaluation: ready/paused phase equivalence', () => {
+  const ready = createInitialPlaybackState(SESSION_ID, identity, T0);
+
+  function pausedReport(overrides: Partial<ActualStateReport> = {}): ActualStateReport {
+    return {
+      type: 'actual-state',
+      sessionId: SESSION_ID,
+      participantId: 'participant-1',
+      resourceIdentity: identity,
+      adapterId: identity.adapterId,
+      observedRevision: ready.stateRevision,
+      mediaPhase: 'paused',
+      positionSeconds: 0,
+      positionObservedAtMs: T1,
+      playbackRate: 1,
+      durationSeconds: null,
+      applyResult: 'applied',
+      ...overrides,
+    };
+  }
+
+  it('judges a paused actual report against a ready authority consistent (no false desync)', () => {
+    assert.equal(arePhasesReadinessEquivalent('ready', 'paused'), true);
+    assert.equal(arePhasesReadinessEquivalent('paused', 'ready'), true);
+    const evaluation = evaluateActualState(ready, pausedReport());
+    assert.equal(evaluation.consistent, true, `expected consistent, got issues: ${JSON.stringify(evaluation.issues)}`);
+    assert.deepEqual(evaluation.issues, []);
+  });
+
+  it('is symmetric: a ready report against a paused authority is consistent', () => {
+    const paused = applyIntent(ready, makeIntent('pause'), T1);
+    const evaluation = evaluateActualState(paused, {
+      ...pausedReport(),
+      observedRevision: paused.stateRevision,
+      mediaPhase: 'ready',
+    });
+    assert.equal(evaluation.consistent, true, `expected consistent, got issues: ${JSON.stringify(evaluation.issues)}`);
+    assert.deepEqual(evaluation.issues, []);
+  });
+
+  it('still flags real divergences: playing, ended and buffering reports against a ready authority are phase mismatches', () => {
+    for (const mediaPhase of ['playing', 'ended', 'buffering'] as const) {
+      const evaluation = evaluateActualState(ready, pausedReport({ mediaPhase }));
+      assert.equal(evaluation.consistent, false, `${mediaPhase} against a ready authority must not be consistent`);
+      assert.ok(
+        evaluation.issues.some((issue) => issue.kind === 'phase-mismatch'),
+        `${mediaPhase} against a ready authority must carry a phase-mismatch issue`,
+      );
+    }
+    // error/buffering are additionally unacceptable on their own.
+    const buffering = evaluateActualState(ready, pausedReport({ mediaPhase: 'buffering' }));
+    assert.ok(
+      buffering.issues.some((issue) => issue.kind === 'unacceptable-phase'),
+      'buffering must also be flagged as an unacceptable phase',
+    );
+  });
+
+  it('keeps judging real drift: a paused report far from the ready playhead is still a desync', () => {
+    const evaluation = evaluateActualState(ready, pausedReport({ positionSeconds: 5 }));
+    assert.equal(evaluation.consistent, false, 'a 5s drift against a ready authority must stay a desync');
+    const drift = evaluation.issues.find((issue) => issue.kind === 'position-drift');
+    assert.ok(drift, 'the drifted paused report must carry a position-drift issue');
+    assert.ok((drift.driftMs ?? 0) > POSITION_DRIFT_THRESHOLD_MS, 'the drift must exceed the threshold');
+  });
+
+  it('keeps judging real mismatches on other fields: a paused report with a different rate is a desync', () => {
+    const evaluation = evaluateActualState(ready, pausedReport({ playbackRate: 2 }));
+    assert.equal(evaluation.consistent, false, 'a rate mismatch must stay a desync');
+    assert.ok(
+      evaluation.issues.some((issue) => issue.kind === 'rate-mismatch'),
+      'the mismatched rate must be reported',
+    );
   });
 });
 

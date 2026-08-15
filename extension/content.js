@@ -115,10 +115,14 @@ function applyPhase(target, phase) {
       return target.play(); // may reject under autoplay policy; caller reports it
     case 'paused':
     case 'ended':
+    case 'ready':
+      // ready is the authority's fresh-resource phase; keep the media paused
+      // so page autoplay cannot start playback and turn the real phase into
+      // a false mismatch against the authoritative state.
       target.pause();
       return undefined;
     default:
-      // ready / seeking / buffering / loading / error are observed-only phases;
+      // seeking / buffering / loading / error are observed-only phases;
       // position and rate still apply below.
       return undefined;
   }

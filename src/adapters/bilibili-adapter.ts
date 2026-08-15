@@ -204,9 +204,12 @@ export class BilibiliAdapter implements ResourceAdapter {
         return target.play();
       case 'paused':
       case 'ended':
+      case 'ready':
+        // 'ready' is the authority's fresh-resource phase; keep the media
+        // paused so page autoplay cannot start playback and turn the real
+        // phase into a false mismatch against the authoritative state.
         target.pause();
         return;
-      case 'ready':
       case 'seeking':
       case 'buffering':
       case 'loading':

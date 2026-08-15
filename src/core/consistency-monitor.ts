@@ -78,9 +78,26 @@ export function isUnacceptablePhase(phase: MediaPhase): boolean {
 }
 
 /**
+ * True when two phases satisfy the readiness judgment identically. The
+ * authority's fresh-resource phase 'ready' and a real paused media element
+ * are the same observable state, so 'ready' and 'paused' are equivalent for
+ * consistency evaluation. No other phase is equivalent to either: 'playing',
+ * 'ended', 'error' and 'buffering' are distinct observable states, and a
+ * report in any of them against a ready/paused authority is a real mismatch.
+ */
+export function arePhasesReadinessEquivalent(left: MediaPhase, right: MediaPhase): boolean {
+  return left === right
+    || (left === 'ready' && right === 'paused')
+    || (left === 'paused' && right === 'ready');
+}
+
+/**
  * Evaluate one actual-state report against the authoritative state.
  *
- * - Discrete field consistency: revision, phase, rate, duration.
+ * - Discrete field consistency: revision, phase, rate, duration. The
+ *   authority's fresh-resource 'ready' phase and a paused media element are
+ *   the same observable state, so 'ready' and 'paused' are judged equivalent
+ *   for the phase comparison (no other phase is equivalent to either).
  * - Resource/adapter mismatch: while the session has a bound resource, the
  *   report's identity must equal the session's. Against an unbound session
  *   (`authoritative.resourceIdentity === null`) there is nothing to compare,
@@ -124,10 +141,10 @@ export function evaluateActualState(authoritative: PlaybackState, report: Actual
     }
   }
 
-  if (report.mediaPhase !== authoritative.mediaPhase) {
+  if (!arePhasesReadinessEquivalent(report.mediaPhase, authoritative.mediaPhase)) {
     issues.push({
       kind: 'phase-mismatch',
-      detail: `Reported phase ${report.mediaPhase} does not match the authoritative phase ${authoritative.mediaPhase}`,
+      detail: `Reported phase ${report.mediaPhase} does not match the authoritative phase ${authoritative.mediaPhase} (only ready/paused are equivalent)`,
     });
   }
   if (isUnacceptablePhase(report.mediaPhase)) {
@@ -137,8 +154,8 @@ export function evaluateActualState(authoritative: PlaybackState, report: Actual
     });
   }
 
-  // Position drift: compare like phases only; a phase mismatch is already reported.
-  if (report.mediaPhase === authoritative.mediaPhase) {
+  // Position drift: compare equivalent phases only; a phase mismatch is already reported.
+  if (arePhasesReadinessEquivalent(report.mediaPhase, authoritative.mediaPhase)) {
     const expectedPosition = projectPlaybackPosition(authoritative, report.positionObservedAtMs);
     const driftMs = Math.round(Math.abs(expectedPosition - report.positionSeconds) * 1000);
     if (driftMs > POSITION_DRIFT_THRESHOLD_MS) {

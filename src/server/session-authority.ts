@@ -419,11 +419,25 @@ export class SessionAuthority {
    * against nor promote into the new resource), and broadcasts the new state
    * plus session status. Either side may switch videos; the other side follows
    * in its own tab. join-decision remains host-only.
+   *
+   * Re-binding the EXACT identity the session already holds is idempotent and
+   * changes nothing: both ends can legitimately bind the same resource
+   * concurrently (each side's content-ready fires after the same navigation),
+   * and a second identical bind must not bump the revision or reset the
+   * playhead, or it would invalidate the state the first bind just pushed.
+   * Different identities still switch in order below.
    */
   private handleResourceBind(socket: WebSocket, message: ResourceBindMessage): void {
     const participant = this.participants.get(socket);
     if (!participant || participant.id !== message.participantId) {
       this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
+      return;
+    }
+    // Idempotent no-op: an identical bind cannot change anything, so it must
+    // not bump the revision nor reset the playhead. An unbound session has no
+    // identity to compare and still adopts the bind below.
+    const sessionIdentity = this.state.resourceIdentity;
+    if (sessionIdentity !== null && isResourceIdentityEqual(message.resourceIdentity, sessionIdentity)) {
       return;
     }
     const nowMs = Date.now();

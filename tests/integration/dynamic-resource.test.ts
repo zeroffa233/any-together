@@ -16,7 +16,7 @@
  * platform clock can make observable, so each wait polls until its condition
  * holds instead of guessing a latency.
  *
- * Covered scenarios (6):
+ * Covered scenarios (8):
  *   1. authority started without a resource stays unbound (resourceIdentity
  *      null on the wire); playback intents are rejected with 'resource-unbound'
  *      and the state is untouched; the host then binds via `resource-bind`
@@ -48,6 +48,17 @@
  *      0) and can report against the NEW identity to open the readiness
  *      gate; an old-identity report at the new revision can neither promote
  *      a phase nor move the playhead and is diagnosed as a mismatch
+ *   7. a SAME-IDENTITY resource-bind is an idempotent no-op: re-binding the
+ *      identity the session already holds — from either participant, as
+ *      happens when each side's content-ready fires for the same navigation —
+ *      bumps neither revision nor sequence, broadcasts no state, and does
+ *      not reset the playhead; only a DIFFERENT identity bumps and resets,
+ *      exactly once
+ *   8. a paused actual-state report against a fresh 'ready' authority is
+ *      judged consistent: no desync/mismatch diagnostic, no phase
+ *      promotion, and both endpoints reporting 'paused' opens the readiness
+ *      gate ('ready' and 'paused' are the same observable state before
+ *      playback starts)
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -571,6 +582,133 @@ test('a client resource-bind switches the session resource: any joined participa
   assert.equal(desyncClient.reported, true, 'the old-identity report must be counted as reported');
   assert.equal(desyncClient.consistent, false, 'the old-identity report must be judged inconsistent');
   assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV2, 'the authority state must stay bound to the new resource');
+});
+
+test('a same-identity resource-bind is an idempotent no-op from either participant: no revision/sequence bump, no broadcast, no playhead reset; a different identity still bumps and resets', { timeout: 15000 }, async (t) => {
+  const { authority, url, sessionId } = await startAuthority({ resourceIdentity: RESOURCE_BV1, durationSeconds: 600 });
+  const host = new Harness(url, sessionId, HOST, RESOURCE_BV1, 'host');
+  const client = new Harness(url, sessionId, CLIENT, undefined, 'client');
+  t.after(async () => {
+    await client.close();
+    await host.close();
+    await stopAuthority(authority);
+  });
+
+  await host.connect();
+  await client.connect();
+
+  // Put the session into a non-trivial position so a spurious reset would be
+  // observable: a seek to 30s freezes positionSeconds at 30 (revision 1).
+  host.submit('seek', { targetSeconds: 30 });
+  const sought = await host.waitForRevision(1);
+  assert.equal(sought.positionSeconds, 30, `the seek must move the playhead: ${summarize(sought)}`);
+  await client.waitForRevision(1);
+  assert.equal(host.states.length, 2, `host must have join+seek states: ${host.states.map(summarize).join(' -> ')}`);
+  assert.equal(client.states.length, 2, `client must have join+seek states: ${client.states.map(summarize).join(' -> ')}`);
+
+  // The host re-binds the identity the session ALREADY holds (each side's
+  // content-ready fires for the same page). The bind is a no-op; the
+  // actual-state report on the SAME socket is the FIFO positive signal that
+  // the bind was processed before any assertion runs.
+  host.bind(RESOURCE_BV1);
+  host.reportConsistent();
+  await host.waitForStatus(
+    (status) => status.participants.some(
+      (participant) => participant.participantId === HOST && participant.reported && participant.consistent,
+    ),
+    3000,
+  );
+  assert.equal(host.latest.stateRevision, 1, `a same-identity bind must not bump the revision: ${summarize(host.latest)}`);
+  assert.equal(host.latest.lastSequence, 1, 'a same-identity bind must not bump the sequence');
+  assert.equal(host.latest.mediaPhase, 'paused', `a same-identity bind must not reset the phase: ${summarize(host.latest)}`);
+  assert.equal(host.latest.positionSeconds, 30, `a same-identity bind must not reset the playhead: ${summarize(host.latest)}`);
+  assert.deepEqual(host.latest.resourceIdentity, RESOURCE_BV1, 'a same-identity bind must not change the identity');
+  assert.equal(host.states.length, 2, `no state broadcast may follow a same-identity bind: ${host.states.map(summarize).join(' -> ')}`);
+  assert.equal(client.states.length, 2, 'no state broadcast may reach the other participant either');
+  assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV1, 'the authority must stay bound to BV1');
+  assert.equal(authority.getState().stateRevision, 1, 'the authority must not bump on a same-identity bind');
+  assert.equal(authority.getState().positionSeconds, 30, 'the authority must keep the playhead after a same-identity bind');
+
+  // The FIRST real switch — a different identity — still bumps the revision,
+  // resets the playhead, and broadcasts to both ends exactly once.
+  host.bind(RESOURCE_BV2);
+  const boundHost = await host.waitForRevision(2);
+  const boundClient = await client.waitForRevision(2);
+  assert.deepEqual(boundHost.resourceIdentity, RESOURCE_BV2, 'a different-identity bind must switch the identity');
+  assert.equal(boundHost.stateRevision, 2, `a different-identity bind must bump the revision: ${summarize(boundHost)}`);
+  assert.equal(boundHost.lastSequence, 2, 'a different-identity bind must bump the sequence');
+  assert.equal(boundHost.mediaPhase, 'ready', 'a different-identity bind must reset the phase to ready');
+  assert.equal(boundHost.positionSeconds, 0, `a different-identity bind must reset the playhead to 0: ${summarize(boundHost)}`);
+  assert.deepEqual(boundHost, boundClient, 'both participants must observe the identical switched state');
+
+  // The client's own content-ready fires for the SAME new video: its re-bind
+  // of BV2 must also be a no-op, or the switch would be double-applied
+  // (revision bumped twice, playhead reset again after the first switch).
+  client.bind(RESOURCE_BV2);
+  client.reportConsistent();
+  await client.waitForStatus(
+    (status) => status.participants.some(
+      (participant) => participant.participantId === CLIENT && participant.reported && participant.consistent,
+    ),
+    3000,
+  );
+  assert.equal(host.latest.stateRevision, 2, `a same-identity client bind must not bump the revision either: ${summarize(host.latest)}`);
+  assert.equal(host.latest.lastSequence, 2, 'a same-identity client bind must not bump the sequence');
+  assert.equal(host.latest.mediaPhase, 'ready', `the switched state must stay ready: ${summarize(host.latest)}`);
+  assert.equal(host.latest.positionSeconds, 0, `a same-identity client bind must not move the playhead: ${summarize(host.latest)}`);
+  assert.equal(host.states.length, 3, `host must still have exactly join+seek+bind states: ${host.states.map(summarize).join(' -> ')}`);
+  assert.equal(client.states.length, 3, `client must still have exactly join+seek+bind states: ${client.states.map(summarize).join(' -> ')}`);
+  assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV2, 'the authority must stay bound to BV2');
+  assert.equal(authority.getState().stateRevision, 2, 'the authority must not bump on the client duplicate bind');
+});
+
+test('a paused actual-state report against a ready authority is consistent: no desync diagnostic, and both endpoints reporting paused opens the readiness gate', { timeout: 15000 }, async (t) => {
+  const { authority, url, sessionId } = await startAuthority({ resourceIdentity: RESOURCE_BV1 });
+  const host = new Harness(url, sessionId, HOST, RESOURCE_BV1, 'host');
+  const client = new Harness(url, sessionId, CLIENT, undefined, 'client');
+  t.after(async () => {
+    await client.close();
+    await host.close();
+    await stopAuthority(authority);
+  });
+
+  await host.connect();
+  await client.connect();
+  assert.equal(host.latest.mediaPhase, 'ready', `a fresh bind must leave the authority ready: ${summarize(host.latest)}`);
+
+  // A real media element that loaded but has not started playing reports
+  // 'paused' — the same observable state as the authority's fresh 'ready'.
+  // Both endpoints report their paused page against the ready authority.
+  host.reportConsistent({ mediaPhase: 'paused' });
+  client.reportConsistent({ mediaPhase: 'paused' });
+
+  // The gate opens: the ready status is the positive signal that both reports
+  // were judged. Waiting for it on BOTH endpoints bounds the no-diagnostic
+  // assertion: everything the server sent before the ready status — including
+  // any desync diagnostic — has been processed by then.
+  const hostReady = await host.waitForStatus((status) => status.ready && status.stateRevision === 0, 3000);
+  await client.waitForStatus((status) => status.ready && status.stateRevision === 0, 3000);
+  const hostEntry = hostReady.participants.find((participant) => participant.participantId === HOST);
+  const clientEntry = hostReady.participants.find((participant) => participant.participantId === CLIENT);
+  assert.ok(hostEntry, 'the host must appear in the ready status');
+  assert.equal(hostEntry.reported, true, 'the paused host report must be counted as reported');
+  assert.equal(hostEntry.consistent, true, 'the paused host report must be judged consistent');
+  assert.ok(clientEntry, 'the client must appear in the ready status');
+  assert.equal(clientEntry.reported, true, 'the paused client report must be counted as reported');
+  assert.equal(clientEntry.consistent, true, 'the paused client report must be judged consistent');
+
+  // The paused reports are not a desync: no diagnostic was emitted for either
+  // participant, and nothing was promoted into the authoritative state.
+  const isDesyncDiagnostic = (message: ServerMessage): message is Diagnostic =>
+    message.type === 'diagnostic' && (message.code === 'desync' || message.code === 'actual-state-mismatch');
+  assert.equal(host.diagnostics.filter(isDesyncDiagnostic).length, 0, 'a paused report on a ready authority must not be diagnosed as a desync');
+  assert.equal(client.diagnostics.filter(isDesyncDiagnostic).length, 0, 'neither endpoint may see a desync diagnostic');
+  assert.equal(host.latest.stateRevision, 0, 'a paused report must not promote a phase');
+  assert.equal(host.latest.mediaPhase, 'ready', `the authority must stay ready: ${summarize(host.latest)}`);
+  assert.equal(host.latest.positionSeconds, 0, 'a paused report must not move the playhead');
+  assert.equal(host.states.length, 1, `no state broadcast may follow a consistent report: ${host.states.map(summarize).join(' -> ')}`);
+  assert.equal(client.states.length, 1, 'no state broadcast may reach the client either');
+  assert.deepEqual(authority.getState().resourceIdentity, RESOURCE_BV1, 'the authority must stay bound to BV1');
 });
 
 test('the default adapter registry resolves Bilibili pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {
