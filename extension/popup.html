@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>AnyTogether 播放同步</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+    }
+    body {
+      width: 360px;
+      margin: 0;
+      padding: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: 15px;
+    }
+    section {
+      margin-bottom: 12px;
+    }
+    .field {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
+    .field > label {
+      flex: 0 0 96px;
+      color: #666;
+    }
+    .mode-switch {
+      display: inline-flex;
+      gap: 12px;
+      flex: 1;
+    }
+    .radio {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      cursor: pointer;
+    }
+    .radio input {
+      accent-color: #00a1d6;
+    }
+    input[type="text"], input[type="number"] {
+      flex: 1;
+      min-width: 0;
+      padding: 4px 6px;
+      border: 1px solid #bbb;
+      border-radius: 4px;
+      font-size: 13px;
+      box-sizing: border-box;
+    }
+    input[readonly] {
+      background: #f0f0f0;
+      color: #555;
+    }
+    .input-group {
+      flex: 1;
+      display: flex;
+      gap: 6px;
+      min-width: 0;
+    }
+    .input-group input {
+      flex: 1;
+      min-width: 0;
+    }
+    .row {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    button {
+      padding: 5px 12px;
+      border: 1px solid #888;
+      border-radius: 4px;
+      background: #f5f5f5;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:hover:not(:disabled) {
+      background: #e8e8e8;
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: default;
+    }
+    button.primary {
+      background: #00a1d6;
+      border-color: #00a1d6;
+      color: #fff;
+    }
+    button.primary:hover:not(:disabled) {
+      background: #008fbf;
+    }
+    button.mini {
+      padding: 4px 8px;
+      font-size: 12px;
+      flex: 0 0 auto;
+    }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-size: 12px;
+      color: #fff;
+      background: #999;
+      margin-right: 6px;
+    }
+    .status-connected { background: #2e9e44; }
+    .status-connecting { background: #d28b00; }
+    .status-error { background: #c83232; }
+    .readiness-ready { background: #2e9e44; }
+    .readiness-pending { background: #d28b00; }
+    .meta {
+      margin-top: 6px;
+      font-size: 12px;
+      color: #666;
+      word-break: break-all;
+    }
+    .state {
+      margin-top: 6px;
+      font-variant-numeric: tabular-nums;
+    }
+    .state-bad {
+      color: #b45309;
+      font-weight: 600;
+    }
+    .join-info {
+      margin-bottom: 6px;
+    }
+    .hidden {
+      display: none;
+    }
+    #notice {
+      display: none;
+      margin-top: 8px;
+      padding: 6px 8px;
+      border: 1px solid #d28b00;
+      border-radius: 4px;
+      background: #fdf3e3;
+      color: #8a6100;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    #notice.visible {
+      display: block;
+    }
+    #diagnostics {
+      color: #8a6100;
+    }
+    #error {
+      display: none;
+      margin-top: 8px;
+      padding: 6px 8px;
+      border: 1px solid #c83232;
+      border-radius: 4px;
+      background: #fdecec;
+      color: #a02020;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    #error.visible {
+      display: block;
+    }
+    .hint {
+      margin-top: 10px;
+      font-size: 11px;
+      color: #999;
+    }
+  </style>
+</head>
+<body>
+  <h1>AnyTogether 播放同步</h1>
+
+  <section>
+    <div class="field">
+      <label>模式</label>
+      <span class="mode-switch">
+        <label class="radio"><input type="radio" name="mode" id="modehost" value="host" checked> 主机</label>
+        <label class="radio"><input type="radio" name="mode" id="modeclient" value="client"> 从机</label>
+      </span>
+    </div>
+    <div class="field">
+      <label for="server">服务器地址</label>
+      <input type="text" id="server" value="127.0.0.1">
+    </div>
+    <div class="field">
+      <label for="port">端口</label>
+      <input type="number" id="port" value="8765" min="1" max="65535">
+    </div>
+    <div class="field">
+      <label for="session">Session ID</label>
+      <span class="input-group">
+        <input type="text" id="session" placeholder="自动从本机伴随进程获取">
+        <button id="copysession" class="mini" title="复制共享信息，发送给从机即可加入">复制</button>
+        <button id="localsession" class="mini hidden" title="从本机伴随进程获取 Session 信息">本机获取</button>
+      </span>
+    </div>
+    <div class="field">
+      <label for="participant">参与者 ID</label>
+      <input type="text" id="participant" placeholder="留空自动生成">
+    </div>
+    <div class="row">
+      <button id="connect" class="primary">连接</button>
+      <button id="disconnect">断开</button>
+    </div>
+  </section>
+
+  <section>
+    <span id="status" class="badge">未连接</span>
+    <span id="readiness" class="badge hidden">—</span>
+    <div id="sessioninfo" class="meta"></div>
+    <div id="videolink" class="meta"></div>
+    <div id="state" class="state">—</div>
+    <div id="diagnostics" class="meta"></div>
+  </section>
+  <section>
+    <button id="resync" class="primary">立即同步</button>
+    <span class="hint">以当前主机权威状态重新应用到本页面</span>
+  </section>
+
+  <section id="joinrequest" class="hidden">
+    <div id="joinrequest-info" class="join-info"></div>
+    <div class="row">
+      <button id="joinaccept" class="primary">接受</button>
+      <button id="joinreject">拒绝</button>
+    </div>
+  </section>
+
+  <div id="notice"></div>
+  <div id="error"></div>
+  <div class="hint">主机模式连接本机伴随进程（127.0.0.1）并自动获取 Session；从机模式填入主机分享的地址与 Session ID，加入后自动打开权威视频页面。</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,25 @@
+{
+  "name": "any-together",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/tests/core/*.test.js dist/tests/integration/*.test.js dist/tests/adapters/*.test.js",
+    "smoke:lan": "npm run build && node dist/src/cli/smoke-lan.js",
+    "smoke:process": "npm run build && node dist/src/cli/smoke-process.js",
+    "start:host": "npm run build && node dist/src/cli/host.js",
+    "start:client": "npm run build && node dist/src/cli/client.js"
+  },
+  "dependencies": {
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "typescript": "^5.9.2"
+  }
+}

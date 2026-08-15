@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "AnyTogether 播放同步客户端",
+  "version": "0.1.0",
+  "description": "连接 any-together Node 伴随进程，在 Bilibili 从机页面执行权威播放状态。",
+  "host_permissions": [
+    "https://*.bilibili.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "AnyTogether 播放同步",
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*.bilibili.com/*"],
+      "js": ["identity.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
