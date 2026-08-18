@@ -36,12 +36,15 @@
  *      turns ready only after both participants report against the new
  *      resource
  *   5. createDefaultAdapterRegistry: resolves `/video` pages on the
- *      bilibili.com apex and any subdomain and youtube.com `/watch` pages
- *      with a `v=` parameter, and instantiates via resolveAdapter;
- *      non-video Bilibili pages, unknown, non-http(s) and unparseable URLs
- *      resolve to undefined; a second registration for the same domain
- *      throws AdapterRegistryError 'duplicate-domain' (after normalization)
- *      without leaving partial state
+ *      bilibili.com apex and any subdomain, youtube.com `/watch` pages
+ *      with a `v=` parameter, missav.live `/<locale>/<dvd-id>` pages
+ *      (with an optional `/dmN/` segment), pornhub.com `/view_video.php`
+ *      pages with a `viewkey=` parameter, and xvideos.com
+ *      `/video.<id>/<slug>` pages, and instantiates via resolveAdapter;
+ *      non-video pages of those domains, unknown, non-http(s) and
+ *      unparseable URLs resolve to undefined; a second registration for
+ *      the same domain throws AdapterRegistryError 'duplicate-domain'
+ *      (after normalization) without leaving partial state
  *   6. a CLIENT-initiated resource-bind: any joined participant may switch
  *      the session media, not just the host. The identity-less client binds
  *      BV2 over an actively playing session: both endpoints observe the
@@ -827,7 +830,7 @@ test('legacy joiners without roleHint keep the first-come assignment: the first 
   assert.equal(authority.participantCount, 2, 'both legacy joiners must be seated');
 });
 
-test('the default adapter registry resolves Bilibili and YouTube pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {
+test('the default adapter registry resolves Bilibili, YouTube, MissAV, Pornhub and XVideos pages, refuses unknown URLs, and rejects same-domain conflicts', { timeout: 15000 }, async (t) => {
   const registry = createDefaultAdapterRegistry();
 
   // Bilibili routing: the apex, www, and any subdomain — but only on /video
@@ -847,6 +850,31 @@ test('the default adapter registry resolves Bilibili and YouTube pages, refuses 
   const watch = registry.resolve('https://youtube.com/watch?v=abc123');
   assert.equal(watch?.adapterId, 'youtube', 'a youtube.com watch page must resolve to the youtube adapter');
 
+  // MissAV routing: /<locale>/<hyphenated-dvd-id> pages on missav.live or
+  // any subdomain, with an optional /dmN/ mirror segment; other MissAV
+  // pages never resolve.
+  const missav = registry.resolve('https://missav.live/en/sample-123');
+  assert.equal(missav?.adapterId, 'missav', 'a missav.live /locale/dvd-id page must resolve to the missav adapter');
+  assert.equal(registry.resolve('https://missav.live/dm1/en/sample-123')?.adapterId, 'missav', 'a /dmN/ mirror segment must resolve to the missav adapter');
+  assert.equal(registry.resolve('https://sub.missav.live/en/sample-123')?.adapterId, 'missav', 'a *.missav.live subdomain must resolve to the missav adapter');
+
+  // Pornhub routing: /view_video.php pages with a non-empty viewkey=
+  // parameter in any query position; other Pornhub pages never resolve.
+  const pornhub = registry.resolve('https://www.pornhub.com/view_video.php?viewkey=ph5f2e8a1b3c4d5e6f7a8b9c0d');
+  assert.equal(pornhub?.adapterId, 'pornhub', 'a view_video.php page with a viewkey must resolve to the pornhub adapter');
+  assert.equal(registry.resolve('https://pornhub.com/view_video.php?t=30&viewkey=phabc')?.adapterId, 'pornhub', 'a viewkey in any query position must resolve to the pornhub adapter');
+
+  // XVideos routing: current-shape /video.<encoded-id>/<slug> pages on the
+  // apex or any subdomain; the legacy numeric format and id-only pages
+  // never resolve.
+  const xvideos = registry.resolve('https://www.xvideos.com/video.k3mrbkHfabc/homemade_amateur_compilation_2');
+  assert.equal(xvideos?.adapterId, 'xvideos', 'a /video.<id>/<slug> page must resolve to the xvideos adapter');
+  assert.equal(registry.resolve('https://xvideos.com/video.k3mrbkHfabc/another_slug')?.adapterId, 'xvideos', 'the apex xvideos.com domain must resolve to the xvideos adapter');
+
+  // The default registry serves exactly the five built-in syncers.
+  assert.equal(registry.size, 5, 'the default registry serves exactly Bilibili, YouTube, MissAV, Pornhub and XVideos');
+  assert.deepEqual(registry.list().map((registration) => registration.adapterId), ['bilibili', 'youtube', 'missav', 'pornhub', 'xvideos']);
+
   // resolveAdapter instantiates the syncer for a matching page environment.
   const adapter = registry.resolveAdapter({ location: { href: 'https://www.bilibili.com/video/BV1xx411c7mD' } });
   assert.ok(adapter, 'resolveAdapter must instantiate a syncer for a Bilibili page');
@@ -858,6 +886,13 @@ test('the default adapter registry resolves Bilibili and YouTube pages, refuses 
   assert.equal(registry.resolve('https://sub.bilibili.com/bangumi/play/ep123'), undefined, 'a non-video Bilibili subdomain page must resolve to undefined');
   assert.equal(registry.resolve('https://www.bilibili.com/videos'), undefined, '/videos must not resolve to the bilibili adapter');
   assert.equal(registry.resolve('https://www.bilibili.com/video.html'), undefined, '/video.html must not resolve to the bilibili adapter');
+  assert.equal(registry.resolve('https://missav.live/'), undefined, 'the MissAV homepage must resolve to undefined');
+  assert.equal(registry.resolve('https://missav.live/en/plainid'), undefined, 'a non-hyphenated MissAV id must resolve to undefined');
+  assert.equal(registry.resolve('https://www.pornhub.com/'), undefined, 'the Pornhub homepage must resolve to undefined');
+  assert.equal(registry.resolve('https://www.pornhub.com/view_video.php'), undefined, 'a view page without a viewkey must resolve to undefined');
+  assert.equal(registry.resolve('https://www.xvideos.com/'), undefined, 'the XVideos homepage must resolve to undefined');
+  assert.equal(registry.resolve('https://www.xvideos.com/video123456789'), undefined, 'the legacy numeric XVideos format must resolve to undefined');
+  assert.equal(registry.resolve('https://www.xvideos.com/video.k3mrbkHfabc'), undefined, 'an id-only XVideos page must resolve to undefined');
   assert.equal(registry.resolve('ftp://bilibili.com/video/BV1xx411c7mD'), undefined, 'non-http(s) URLs must resolve to undefined');
   assert.equal(registry.resolve('not a url at all'), undefined, 'unparseable URLs must resolve to undefined');
   assert.equal(registry.resolveAdapter({ location: { href: 'https://example.com/' } }), undefined, 'resolveAdapter must return undefined off-domain');
@@ -893,5 +928,5 @@ test('the default adapter registry resolves Bilibili and YouTube pages, refuses 
     (error: unknown) => error instanceof AdapterRegistryError && error.code === 'duplicate-domain',
     'a normalized-equivalent domain must also throw duplicate-domain',
   );
-  assert.equal(registry.size, 2, 'failed registrations must not leave partial registry state');
+  assert.equal(registry.size, 5, 'failed registrations must not leave partial registry state');
 });

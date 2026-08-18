@@ -1,36 +1,40 @@
 /**
- * Node unit tests for the YouTube page adapter.
+ * Node unit tests for the XVideos page adapter.
  *
  * Every test injects a fake page (document / location / media element), so nothing
- * reads browser globals; two tests prove that isolation explicitly. Failure paths
- * are asserted as explicit results ('rejected' / 'unsupported' with messages),
- * never as fabricated 'applied' outcomes. The same fake page drives the registry
- * tests at the bottom: YouTube watch URLs resolve to the youtube syncer in the
- * default registry (which serves Bilibili, YouTube, MissAV, Pornhub and
- * XVideos) while Bilibili routing stays untouched.
+ * reads browser globals; two tests prove that isolation explicitly. The adapter is
+ * exercised only through the public HTMLMediaElement surface — the fakes carry no
+ * XVideos-private API, so tests double as proof that no private player API is used.
+ *
+ * URL policy is tested on both layers (identity guard and registry rule):
+ * current-shape video pages `/video.<encoded-id>/<slug>` are supported; the dead
+ * legacy numeric format (`/video123456789`), id-only pages, non-video paths, and
+ * query/fragment-bearing URLs are rejected explicitly — no claim is made for them.
+ * Failure paths are asserted as explicit results ('rejected' / 'unsupported' with
+ * messages), never as fabricated 'applied' outcomes.
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  YoutubeAdapter,
-  type YoutubeMediaCollection,
-  type YoutubeMediaElement,
-  type YoutubePage,
-  youtubeRegistration,
-} from '../../src/adapters/youtube-adapter.js';
+  XvideosAdapter,
+  type XvideosMediaCollection,
+  type XvideosMediaElement,
+  type XvideosPage,
+  xvideosRegistration,
+} from '../../src/adapters/xvideos-adapter.js';
 import {
   AdapterSiteError,
   type AdapterEvent,
   type AdapterSiteErrorCode,
   type AdapterTargetState,
 } from '../../src/adapters/resource-adapter.js';
-import { AdapterRegistryError, createDefaultAdapterRegistry } from '../../src/adapters/adapter-registry.js';
+import { AdapterRegistry, AdapterRegistryError, createDefaultAdapterRegistry } from '../../src/adapters/adapter-registry.js';
 import { isValidResourceIdentity } from '../../src/shared/protocol.js';
 
-const YOUTUBE_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
-const VIDEO_ID = 'dQw4w9WgXcQ';
-/** The canonical identity every watch URL collapses onto. */
-const CANONICAL_URL = `https://www.youtube.com/watch?v=${VIDEO_ID}`;
+const XVIDEOS_URL = 'https://www.xvideos.com/video.k3mrbkHfabc/homemade_amateur_compilation_2';
+const ENCODED_ID = 'k3mrbkHfabc';
+/** The canonical identity every video URL collapses onto (encoded id only, no slug). */
+const CANONICAL_URL = `https://www.xvideos.com/video.${ENCODED_ID}`;
 
 /** All native media events the adapter surfaces to subscribers. */
 const ALL_MEDIA_EVENTS: readonly AdapterEvent[] = [
@@ -47,7 +51,7 @@ type FakeMediaOptions = {
 };
 
 /** Scripted media element: records native calls, exposes event bindings, emits on demand. */
-class FakeMedia implements YoutubeMediaElement {
+class FakeMedia implements XvideosMediaElement {
   error: unknown = null;
   ended = false;
   seeking = false;
@@ -144,10 +148,10 @@ class FakeMedia implements YoutubeMediaElement {
   }
 }
 
-function makePage(media: YoutubeMediaElement[], href: string): YoutubePage {
+function makePage(media: XvideosMediaElement[], href: string): XvideosPage {
   return {
     document: {
-      querySelectorAll: (_selectors: string): YoutubeMediaCollection => media,
+      querySelectorAll: (_selectors: string): XvideosMediaCollection => media,
     },
     location: { href },
   };
@@ -170,113 +174,103 @@ function assertAdapterSiteError(code: AdapterSiteErrorCode, fn: () => unknown): 
   return siteError;
 }
 
-test('identifyResource returns a normalized YouTube identity', () => {
-  const adapter = new YoutubeAdapter(makePage([], 'https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30&list=PLabc'));
-  assert.equal(adapter.adapterId, 'youtube');
+test('identifyResource returns a normalized XVideos identity from a current-shape URL', () => {
+  const adapter = new XvideosAdapter(makePage([], XVIDEOS_URL));
+  assert.equal(adapter.adapterId, 'xvideos');
   const identity = adapter.identifyResource();
-  assert.equal(identity.adapterId, 'youtube');
-  // Extra query parameters are dropped; the identity is rebuilt from v alone.
+  assert.equal(identity.adapterId, 'xvideos');
+  // The identity is rebuilt from the encoded id alone; the slug is dropped.
   assert.equal(identity.canonicalUrl, CANONICAL_URL);
-  assert.equal(identity.resourceId, VIDEO_ID);
+  assert.equal(identity.resourceId, ENCODED_ID);
   assert.equal(isValidResourceIdentity(identity), true, 'produced identities must pass the shared resource gate');
-
-  const bare = new YoutubeAdapter(makePage([], 'https://www.youtube.com/watch?v=dQw4w9WgXcQ')).identifyResource();
-  assert.equal(bare.canonicalUrl, CANONICAL_URL);
-  assert.equal(bare.resourceId, VIDEO_ID);
-  assert.equal(isValidResourceIdentity(bare), true, 'a normalized identity must pass the shared resource gate');
 });
 
-test('identifyResource normalizes query order, extra parameters and fragments', () => {
-  const reshuffled = new YoutubeAdapter(makePage([], 'https://youtube.com/watch?list=PLabc&t=30&v=dQw4w9WgXcQ#frag')).identifyResource();
-  assert.equal(reshuffled.canonicalUrl, CANONICAL_URL);
-  assert.equal(reshuffled.resourceId, VIDEO_ID);
-
-  const fragmentOnly = new YoutubeAdapter(makePage([], 'https://www.youtube.com/watch?v=dQw4w9WgXcQ#t=1m30s')).identifyResource();
-  assert.equal(fragmentOnly.canonicalUrl, CANONICAL_URL);
+test('identifyResource derives the identity from the encoded id, ignoring slug variants', () => {
+  const slugOne = new XvideosAdapter(makePage([], 'https://www.xvideos.com/video.k3mrbkHfabc/title_one')).identifyResource();
+  const slugTwo = new XvideosAdapter(makePage([], 'https://www.xvideos.com/video.k3mrbkHfabc/title_two')).identifyResource();
+  // XVideos redirects wrong slugs onto the canonical slug, and the slug is pure
+  // SEO text — it must never change the resource identity.
+  assert.equal(slugOne.canonicalUrl, CANONICAL_URL);
+  assert.equal(slugOne.resourceId, ENCODED_ID);
+  assert.equal(slugTwo.canonicalUrl, CANONICAL_URL);
+  assert.equal(slugTwo.resourceId, ENCODED_ID);
 });
 
-test('identifyResource collapses every YouTube host onto one canonical URL', () => {
+test('identifyResource collapses every XVideos host onto one canonical URL', () => {
   const hosts = [
-    'https://youtube.com/watch?v=dQw4w9WgXcQ',
-    'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-    'https://m.youtube.com/watch?v=dQw4w9WgXcQ',
-    'https://music.youtube.com/watch?v=dQw4w9WgXcQ',
-    'https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ',
+    'https://xvideos.com/video.k3mrbkHfabc/slug',
+    'https://www.xvideos.com/video.k3mrbkHfabc/slug',
+    'https://flash.xvideos.com/video.k3mrbkHfabc/slug',
   ];
   for (const href of hosts) {
-    // The last entry is a lookalike host: it must be rejected, not normalized.
-    if (href.includes('evil.example')) {
-      const error = assertAdapterSiteError(
-        'not-bilibili',
-        () => new YoutubeAdapter(makePage([], href)).identifyResource(),
-      );
-      assert.match(error.message, /not a YouTube site/);
-      continue;
-    }
-    const identity = new YoutubeAdapter(makePage([], href)).identifyResource();
+    const identity = new XvideosAdapter(makePage([], href)).identifyResource();
     assert.equal(identity.canonicalUrl, CANONICAL_URL, `${href} must collapse onto the canonical URL`);
-    assert.equal(identity.resourceId, VIDEO_ID, `${href} must keep the video id`);
+    assert.equal(identity.resourceId, ENCODED_ID, `${href} must keep the encoded id`);
   }
 });
 
-test('identifyResource rejects non-watch YouTube pages with no video id', () => {
-  const nonWatchPages = [
-    'https://www.youtube.com/',
-    'https://www.youtube.com/shorts/dQw4w9WgXcQ',
-    'https://www.youtube.com/feed/subscriptions',
-    'https://www.youtube.com/watch',
-    'https://www.youtube.com/watch?list=PLabc',
-    'https://www.youtube.com/watch?v=',
-    'https://www.youtube.com/watch/dQw4w9WgXcQ',
-    'https://www.youtube.com/watchdogs',
+test('identifyResource rejects legacy numeric and non-video XVideos pages explicitly', () => {
+  const nonVideoPages = [
+    'https://www.xvideos.com/',
+    'https://www.xvideos.com/video123456789',
+    'https://www.xvideos.com/video123456789/homemade_compilation',
+    'https://www.xvideos.com/video.k3mrbkHfabc',
+    'https://www.xvideos.com/video.k3mrbkHfabc/',
+    'https://www.xvideos.com/video.',
+    'https://www.xvideos.com/video',
+    'https://www.xvideos.com/tags/amateur',
+    'https://www.xvideos.com/porn-videos',
+    'https://www.xvideos.com/video.k3mrbkHfabc/slug?ref=1',
+    'https://www.xvideos.com/video.k3mrbkHfabc/slug#fragment',
   ];
-  for (const href of nonWatchPages) {
+  for (const href of nonVideoPages) {
     const error = assertAdapterSiteError(
       'not-bilibili',
-      () => new YoutubeAdapter(makePage([], href)).identifyResource(),
+      () => new XvideosAdapter(makePage([], href)).identifyResource(),
     );
-    assert.match(error.message, /not a YouTube watch page|has no video id/);
+    assert.match(error.message, /not an XVideos video page/, `${href} must be rejected as a non-video page`);
   }
 });
 
-test('identifyResource rejects hosts that are not YouTube with not-bilibili', () => {
+test('identifyResource rejects hosts that are not XVideos with not-bilibili', () => {
   const foreignHosts = [
-    'https://example.com/watch?v=dQw4w9WgXcQ',
-    'https://evilyoutube.com/watch?v=dQw4w9WgXcQ',
-    'https://youtube.co/watch?v=dQw4w9WgXcQ',
-    'https://notyoutube.com/watch?v=dQw4w9WgXcQ',
+    'https://example.com/video.k3mrbkHfabc/slug',
+    'https://evilxvideos.com/video.k3mrbkHfabc/slug',
+    'https://xvideos.com.evil.example/video.k3mrbkHfabc/slug',
+    'https://xvideos.co/video.k3mrbkHfabc/slug',
+    'https://notxvideos.com/video.k3mrbkHfabc/slug',
   ];
   for (const href of foreignHosts) {
     const error = assertAdapterSiteError(
       'not-bilibili',
-      () => new YoutubeAdapter(makePage([], href)).identifyResource(),
+      () => new XvideosAdapter(makePage([], href)).identifyResource(),
     );
-    assert.match(error.message, /not a YouTube site/);
+    assert.match(error.message, /not an XVideos site/);
   }
 });
 
 test('identifyResource rejects unparseable or missing URLs explicitly', () => {
   const invalid = assertAdapterSiteError(
     'invalid-url',
-    () => new YoutubeAdapter(makePage([], 'not a url')).identifyResource(),
+    () => new XvideosAdapter(makePage([], 'not a url')).identifyResource(),
   );
   assert.match(invalid.message, /Cannot parse/);
 
   const emptyHref = assertAdapterSiteError(
     'browser-required',
-    () => new YoutubeAdapter(makePage([], '')).identifyResource(),
+    () => new XvideosAdapter(makePage([], '')).identifyResource(),
   );
   assert.match(emptyHref.message, /page location/);
 
   const noLocation = assertAdapterSiteError(
     'browser-required',
-    () => new YoutubeAdapter({ document: makePage([], YOUTUBE_URL).document } as unknown as YoutubePage).identifyResource(),
+    () => new XvideosAdapter({ document: makePage([], XVIDEOS_URL).document } as unknown as XvideosPage).identifyResource(),
   );
   assert.match(noLocation.message, /page location/);
 });
 
 test('adapter constructed without a page fails explicitly in Node', { timeout: 5000 }, async () => {
-  const adapter = new YoutubeAdapter();
+  const adapter = new XvideosAdapter();
   assertAdapterSiteError('browser-required', () => adapter.identifyResource());
   assertAdapterSiteError('browser-required', () => adapter.selectTarget());
 
@@ -307,7 +301,7 @@ test('injected page is used exclusively; browser globals are never read', { time
   Object.defineProperty(globalThis, 'location', { value: locationSpy, configurable: true, writable: true });
   try {
     const media = new FakeMedia({ currentTime: 7 });
-    const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+    const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
     assert.equal(adapter.identifyResource().canonicalUrl, CANONICAL_URL);
     adapter.selectTarget();
     assert.equal(adapter.readState().positionSeconds, 7);
@@ -332,7 +326,7 @@ test('injected page is used exclusively; browser globals are never read', { time
 test('selectTarget picks the largest visible video', () => {
   const small = new FakeMedia({ currentTime: 11, rect: { width: 640, height: 360 } });
   const large = new FakeMedia({ currentTime: 22, rect: { width: 1920, height: 1080 } });
-  const adapter = new YoutubeAdapter(makePage([small, large], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([small, large], XVIDEOS_URL));
   adapter.selectTarget();
   assert.equal(adapter.readState().positionSeconds, 22);
 });
@@ -340,7 +334,7 @@ test('selectTarget picks the largest visible video', () => {
 test('selectTarget breaks area ties by document order', () => {
   const first = new FakeMedia({ currentTime: 33, rect: { width: 800, height: 600 } });
   const second = new FakeMedia({ currentTime: 44, rect: { width: 800, height: 600 } });
-  const adapter = new YoutubeAdapter(makePage([first, second], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([first, second], XVIDEOS_URL));
   adapter.selectTarget();
   assert.equal(adapter.readState().positionSeconds, 33);
 });
@@ -348,12 +342,14 @@ test('selectTarget breaks area ties by document order', () => {
 test('selectTarget ignores candidates that have no playable data', () => {
   const stale = new FakeMedia({ currentTime: 1, readyState: 0, duration: Number.NaN });
   const playable = new FakeMedia({ currentTime: 2 });
-  const adapter = new YoutubeAdapter(makePage([stale, playable], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([stale, playable], XVIDEOS_URL));
   adapter.selectTarget();
   assert.equal(adapter.readState().positionSeconds, 2);
 });
 
-test('selectTarget tolerates candidates without a measurable rect as zero area', () => {
+test('selectTarget uses only the public media surface; unmeasured candidates score zero', () => {
+  // A minimal structural fake with no getBoundingClientRect and no event API
+  // beyond the HTMLMediaElement contract: the adapter must still work with it.
   const unmeasured = {
     error: null,
     ended: false,
@@ -369,30 +365,38 @@ test('selectTarget tolerates candidates without a measurable rect as zero area',
     pause(): void {},
     addEventListener(): void {},
     removeEventListener(): void {},
-  } as unknown as YoutubeMediaElement;
-  const adapter = new YoutubeAdapter(makePage([unmeasured], YOUTUBE_URL));
+  } as unknown as XvideosMediaElement;
+  const adapter = new XvideosAdapter(makePage([unmeasured], XVIDEOS_URL));
   adapter.selectTarget();
   assert.equal(adapter.readState().positionSeconds, 5);
 });
 
-test('no playable media reports no-media on select/read/apply', { timeout: 5000 }, async () => {
-  const adapter = new YoutubeAdapter(makePage([], YOUTUBE_URL));
-  const error = assertAdapterSiteError('no-media', () => adapter.selectTarget());
-  assert.match(error.message, /No playable YouTube video/);
-  assertAdapterSiteError('no-media', () => adapter.readState());
+test('age-gated or media-less pages report no-media on select/read/apply — never applied', { timeout: 5000 }, async () => {
+  // No playable <video> at all: an age wall, geo block, or broken embed all
+  // look like this to the adapter, and all must be reported, not fabricated.
+  const empty = new XvideosAdapter(makePage([], XVIDEOS_URL));
+  const error = assertAdapterSiteError('no-media', () => empty.selectTarget());
+  assert.match(error.message, /No playable XVideos video/);
+  assertAdapterSiteError('no-media', () => empty.readState());
 
-  const result = await adapter.applyState(targetState());
+  const result = await empty.applyState(targetState());
   assert.equal(result.result, 'unsupported');
-  assert.match(result.error ?? '', /No playable YouTube video/);
+  assert.match(result.error ?? '', /No playable XVideos video/);
   assert.equal(result.state.mediaPhase, 'paused');
   assert.equal(result.state.resourceIdentity.canonicalUrl, CANONICAL_URL);
-  assert.equal(result.state.resourceIdentity.resourceId, VIDEO_ID);
+  assert.equal(result.state.resourceIdentity.resourceId, ENCODED_ID);
   assert.equal(isValidResourceIdentity(result.state.resourceIdentity), true, 'the unsupported placeholder must still satisfy the shared resource gate');
+
+  // Only stale (unplayable) candidates: same outcome.
+  const staleOnly = new XvideosAdapter(makePage([new FakeMedia({ readyState: 0, duration: Number.NaN })], XVIDEOS_URL));
+  assertAdapterSiteError('no-media', () => staleOnly.selectTarget());
+  const staleResult = await staleOnly.applyState(targetState());
+  assert.equal(staleResult.result, 'unsupported');
 });
 
 test('readState maps live media signals onto shared phases', () => {
   const media = new FakeMedia({ paused: false, readyState: 4 });
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const snapshot = adapter.readState();
@@ -426,7 +430,7 @@ test('readState maps live media signals onto shared phases', () => {
 
 test('waiting marks buffering and playing clears it; paused wins while buffering', () => {
   const media = new FakeMedia({ paused: false });
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
   const received: AdapterEvent[] = [];
   const unsubscribe = adapter.subscribe((event) => {
@@ -451,7 +455,7 @@ test('waiting marks buffering and playing clears it; paused wins while buffering
 
 test('applyState pauses and reads back the real state', { timeout: 5000 }, async () => {
   const media = new FakeMedia({ paused: false, currentTime: 12.5 });
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const result = await adapter.applyState(targetState({ mediaPhase: 'paused', positionSeconds: 12.5 }));
@@ -466,7 +470,7 @@ test('applyState pauses and reads back the real state', { timeout: 5000 }, async
 
 test('applyState seeks beyond the threshold and reads back the settled position', { timeout: 5000 }, async () => {
   const media = new FakeMedia({ currentTime: 0 });
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const result = await adapter.applyState(targetState({ positionSeconds: 300 }));
@@ -480,7 +484,7 @@ test('applyState seeks beyond the threshold and reads back the settled position'
 
 test('applyState leaves currentTime alone when the position is within the threshold', { timeout: 5000 }, async () => {
   const media = new FakeMedia({ currentTime: 42 });
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const result = await adapter.applyState(targetState({ positionSeconds: 42.1 }));
@@ -491,7 +495,7 @@ test('applyState leaves currentTime alone when the position is within the thresh
 
 test('applyState plays, sets the rate, and reads back the real state', { timeout: 5000 }, async () => {
   const media = new FakeMedia({ currentTime: 5 });
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const result = await adapter.applyState(targetState({ mediaPhase: 'playing', positionSeconds: 5, playbackRate: 2 }));
@@ -508,7 +512,7 @@ test('applyState plays, sets the rate, and reads back the real state', { timeout
 test('applyState reports rejected when play() rejects — never fabricates applied', { timeout: 5000 }, async () => {
   const media = new FakeMedia();
   media.rejectNextPlay(new Error('play() interrupted by the browser'));
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const result = await adapter.applyState(targetState({ mediaPhase: 'playing' }));
@@ -522,7 +526,7 @@ test('applyState reports rejected when play() rejects — never fabricates appli
 
 test('applyState rejects invalid playback rates explicitly', { timeout: 5000 }, async () => {
   const media = new FakeMedia();
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
 
   const result = await adapter.applyState(targetState({ mediaPhase: 'playing', playbackRate: Number.NaN }));
@@ -534,7 +538,7 @@ test('applyState rejects invalid playback rates explicitly', { timeout: 5000 }, 
 
 test('subscribe binds all native media events and unsubscribe removes exactly them', () => {
   const media = new FakeMedia();
-  const adapter = new YoutubeAdapter(makePage([media], YOUTUBE_URL));
+  const adapter = new XvideosAdapter(makePage([media], XVIDEOS_URL));
   adapter.selectTarget();
   const received: AdapterEvent[] = [];
   const unsubscribe = adapter.subscribe((event) => {
@@ -557,70 +561,63 @@ test('subscribe binds all native media events and unsubscribe removes exactly th
 
 // --- registry -------------------------------------------------------------------
 
-test('the default adapter registry resolves YouTube watch URLs to the youtube syncer', () => {
-  const registry = createDefaultAdapterRegistry();
+test('a registry holding xvideosRegistration resolves current-shape video URLs and rejects everything else', () => {
+  const registry = new AdapterRegistry();
+  registry.register(xvideosRegistration);
 
-  // Watch pages resolve on the apex, www and any subdomain, with the v
-  // parameter in any query position.
-  const apex = registry.resolve('https://youtube.com/watch?v=dQw4w9WgXcQ');
-  assert.ok(apex, 'the apex youtube.com domain must resolve');
-  assert.equal(apex.adapterId, 'youtube', 'the apex domain must route to the youtube adapter');
-  const www = registry.resolve('https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=30&list=PLabc');
-  assert.equal(www?.adapterId, 'youtube', 'www.youtube.com must resolve to the youtube adapter');
-  const music = registry.resolve('https://music.youtube.com/watch?list=PLabc&v=dQw4w9WgXcQ');
-  assert.equal(music?.adapterId, 'youtube', 'a *.youtube.com subdomain with a v parameter must resolve');
-  assert.equal(registry.get('youtube')?.name, 'YouTube');
-  assert.deepEqual(registry.get('youtube')?.capabilities, ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events']);
+  // Current-shape video pages resolve on the apex, www and any subdomain.
+  const apex = registry.resolve('https://xvideos.com/video.k3mrbkHfabc/slug');
+  assert.ok(apex, 'the apex xvideos.com domain must resolve');
+  assert.equal(apex.adapterId, 'xvideos', 'the apex domain must route to the xvideos adapter');
+  assert.equal(registry.resolve('https://www.xvideos.com/video.k3mrbkHfabc/homemade_compilation')?.adapterId, 'xvideos');
+  assert.equal(registry.resolve('https://flash.xvideos.com/video.k3mrbkHfabc/slug')?.adapterId, 'xvideos');
+  assert.equal(registry.get('xvideos')?.name, 'XVideos');
+  assert.deepEqual(registry.get('xvideos')?.capabilities, ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events']);
 
-  // Non-watch pages and watch pages without a v parameter never resolve.
-  assert.equal(registry.resolve('https://youtube.com/'), undefined, 'the homepage must not resolve');
-  assert.equal(registry.resolve('https://youtube.com/shorts/dQw4w9WgXcQ'), undefined, 'shorts must not resolve');
-  assert.equal(registry.resolve('https://youtube.com/watch'), undefined, '/watch without a v parameter must not resolve');
-  assert.equal(registry.resolve('https://youtube.com/watch?v='), undefined, 'an empty v parameter must not resolve');
+  // Legacy numeric, id-only, non-video and query/fragment-bearing URLs never resolve.
+  assert.equal(registry.resolve('https://www.xvideos.com/'), undefined, 'the homepage must not resolve');
+  assert.equal(registry.resolve('https://www.xvideos.com/video123456789'), undefined, 'legacy numeric ids must not resolve');
+  assert.equal(registry.resolve('https://www.xvideos.com/video123456789/slug'), undefined, 'legacy numeric ids with slugs must not resolve');
+  assert.equal(registry.resolve('https://www.xvideos.com/video.k3mrbkHfabc'), undefined, 'encoded id without a slug must not resolve');
+  assert.equal(registry.resolve('https://www.xvideos.com/video.k3mrbkHfabc/slug?ref=1'), undefined, 'query-bearing video URLs must not resolve');
+  assert.equal(registry.resolve('https://www.xvideos.com/tags/amateur'), undefined, 'tag pages must not resolve');
 
   // resolveAdapter instantiates the syncer for a matching page environment.
-  const adapter = registry.resolveAdapter({ location: { href: YOUTUBE_URL } });
-  assert.ok(adapter, 'resolveAdapter must instantiate a syncer for a YouTube page');
-  assert.equal(adapter.adapterId, 'youtube', 'the instantiated adapter must identify as youtube');
-  assert.ok(adapter instanceof YoutubeAdapter, 'resolveAdapter must produce a YoutubeAdapter');
+  const adapter = registry.resolveAdapter({ location: { href: XVIDEOS_URL } });
+  assert.ok(adapter, 'resolveAdapter must instantiate a syncer for an XVideos page');
+  assert.equal(adapter.adapterId, 'xvideos', 'the instantiated adapter must identify as xvideos');
+  assert.ok(adapter instanceof XvideosAdapter, 'resolveAdapter must produce an XvideosAdapter');
 });
 
-test('the default adapter registry keeps Bilibili routing and scope unchanged', () => {
-  const registry = createDefaultAdapterRegistry();
-
-  const bilibili = registry.resolve('https://www.bilibili.com/video/BV1xx411c7mD');
-  assert.equal(bilibili?.adapterId, 'bilibili', 'Bilibili video pages must still resolve to the bilibili adapter');
-  assert.equal(registry.resolve('https://live.bilibili.com/video/12345')?.adapterId, 'bilibili', 'Bilibili subdomains must still resolve');
-  assert.equal(registry.resolve('https://www.bilibili.com/'), undefined, 'non-video Bilibili pages must still not resolve');
-  assert.equal(registry.resolve('https://www.bilibili.com/videos'), undefined, '/videos must still not resolve');
-  assert.equal(registry.resolve('https://example.com/watch?v=dQw4w9WgXcQ'), undefined, 'unknown domains must not resolve');
-  assert.equal(registry.resolve('not a url at all'), undefined, 'unparseable URLs must not resolve');
-  assert.equal(registry.resolveAdapter({ location: { href: 'https://example.com/' } }), undefined, 'resolveAdapter must return undefined off-domain');
-
-  assert.equal(registry.size, 5, 'the default registry serves Bilibili, YouTube, MissAV, Pornhub and XVideos');
-  assert.deepEqual(registry.list().map((registration) => registration.adapterId), ['bilibili', 'youtube', 'missav', 'pornhub', 'xvideos']);
-});
-
-test('youtubeRegistration registers cleanly in a fresh registry and refuses conflicts', () => {
-  const registry = createDefaultAdapterRegistry();
+test('xvideosRegistration registers cleanly in a fresh registry and refuses conflicts; the default registry serves xvideos', () => {
+  const registry = new AdapterRegistry();
+  registry.register(xvideosRegistration);
 
   // Duplicate adapterId and duplicate domain are hard conflicts.
   assert.throws(
-    () => registry.register(youtubeRegistration),
+    () => registry.register(xvideosRegistration),
     (error: unknown) => error instanceof AdapterRegistryError && error.code === 'duplicate-adapter',
-    're-registering the youtube adapterId must throw duplicate-adapter',
+    're-registering the xvideos adapterId must throw duplicate-adapter',
   );
   assert.throws(
     () => registry.register({
-      adapterId: 'youtube-clone',
-      name: 'YouTube Clone',
-      domain: 'youtube.com',
-      create: () => new YoutubeAdapter(),
+      adapterId: 'xvideos-clone',
+      name: 'XVideos Clone',
+      domain: 'xvideos.com',
+      create: () => new XvideosAdapter(),
       capabilities: [],
     }),
     (error: unknown) => error instanceof AdapterRegistryError
       && error.code === 'duplicate-domain'
-      && /already served by adapter 'youtube'/.test(error.message),
-    'registering a second syncer for youtube.com must throw duplicate-domain',
+      && /already served by adapter 'xvideos'/.test(error.message),
+    'registering a second syncer for xvideos.com must throw duplicate-domain',
   );
+
+  // The default registry now serves XVideos as one of the five built-in
+  // syncers; existing routing (Bilibili + YouTube) must be untouched.
+  const defaults = createDefaultAdapterRegistry();
+  assert.equal(defaults.resolve('https://www.xvideos.com/video.k3mrbkHfabc/slug')?.adapterId, 'xvideos', 'the default registry resolves XVideos URLs');
+  assert.equal(defaults.size, 5, 'the default registry serves exactly the five built-in syncers');
+  assert.equal(defaults.resolve('https://www.youtube.com/watch?v=dQw4w9WgXcQ')?.adapterId, 'youtube');
+  assert.equal(defaults.resolve('https://www.bilibili.com/video/BV1xx411c7mD')?.adapterId, 'bilibili');
 });

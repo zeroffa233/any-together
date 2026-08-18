@@ -1,5 +1,8 @@
 import type { AdapterCapability, ResourceAdapter } from './resource-adapter.js';
 import { bilibiliRegistration } from './bilibili-adapter.js';
+import { missavRegistration } from './missav-adapter.js';
+import { pornhubRegistration } from './pornhub-adapter.js';
+import { xvideosRegistration } from './xvideos-adapter.js';
 import { youtubeRegistration } from './youtube-adapter.js';
 
 /**
@@ -220,8 +223,11 @@ export function createDefaultAdapterRegistry(): AdapterRegistry {
   const registry = new AdapterRegistry();
   registry.register(bilibiliRegistration);
   registry.register(youtubeRegistration);
+  registry.register(missavRegistration);
+  registry.register(pornhubRegistration);
+  registry.register(xvideosRegistration);
   return registry;
 }
 
-/** Default registry: serves Bilibili and YouTube. */
+/** Default registry: serves Bilibili, YouTube, MissAV, Pornhub and XVideos. */
 export const defaultAdapterRegistry = createDefaultAdapterRegistry();

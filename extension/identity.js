@@ -236,6 +236,83 @@
     },
   });
 
+  // MissAV: http(s) pages on missav.live or a *.missav.live subdomain whose
+  // path is `/<locale>/<dvd-id>` with an optional `/dm<N>/` mirror segment
+  // (mirrors the manifest content-script scope, so homepage and locale-only
+  // pages are never served). The dvd id is the session resource: the
+  // canonical identity is rebuilt from locale + dvd id alone, so the mirror
+  // segment, subdomain, query parameters and fragment never change it, and
+  // every mirror collapses onto https://missav.live/<locale>/<dvd-id> — the
+  // same normalization as the Node MissavAdapter.
+  register({
+    adapterId: 'missav',
+    name: 'MissAV',
+    domain: 'missav.live',
+    // `/<locale>/<dvd-id>` with an optional `/dm<N>/` mirror segment; the id
+    // must be hyphenated so locale-only and non-video paths never match.
+    urlRule: {
+      source: '^https?://(?:[^/]+\\.)?missav\\.live/(?:dm\\d+/)?([a-z]{2}(?:-[a-z]{2})?)/([a-z0-9]+-[a-z0-9]+)/?(?=[?#]|$)',
+      flags: '',
+    },
+    capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    deriveIdentity(url) {
+      const match = url.href.match(/^https?:\/\/(?:[^/]+\.)?missav\.live\/(?:dm\d+\/)?([a-z]{2}(?:-[a-z]{2})?)\/([a-z0-9]+-[a-z0-9]+)\/?(?=[?#]|$)/);
+      if (!match) return undefined;
+      return { canonicalUrl: `https://missav.live/${match[1]}/${match[2]}`, resourceId: match[2] };
+    },
+  });
+
+  // Pornhub: http(s) pages on pornhub.com or a *.pornhub.com subdomain whose
+  // path is /view_video.php with a non-empty viewkey= query parameter in any
+  // position (mirrors the manifest content-script scope, so homepage, channel
+  // and search pages are never served). The viewkey is the session resource:
+  // the canonical identity is rebuilt from the viewkey alone, so query order,
+  // extra parameters and the fragment never change it, and every host
+  // (pornhub.com, www, country subdomains) collapses onto
+  // https://www.pornhub.com/view_video.php?viewkey=<id> — the same
+  // normalization as the Node PornhubAdapter.
+  register({
+    adapterId: 'pornhub',
+    name: 'Pornhub',
+    domain: 'pornhub.com',
+    // /view_video.php with a non-empty viewkey= parameter in any query position.
+    urlRule: { source: '^https?://(?:[^/]+\\.)?pornhub\\.com/view_video\\.php\\?(?:[^#]*&)?viewkey=[^&#]+', flags: '' },
+    capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    deriveIdentity(url) {
+      const viewkey = url.searchParams.get('viewkey');
+      if (viewkey === null) return undefined;
+      const trimmed = viewkey.trim();
+      if (trimmed.length === 0) return undefined;
+      return {
+        canonicalUrl: `https://www.pornhub.com/view_video.php?viewkey=${encodeURIComponent(trimmed)}`,
+        resourceId: trimmed,
+      };
+    },
+  });
+
+  // XVideos: http(s) pages on xvideos.com or a *.xvideos.com subdomain whose
+  // path is a current-shape video page `/video.<encoded-id>/<slug>` (mirrors
+  // the manifest content-script scope; homepage, tag/browse pages and the
+  // dead legacy numeric format are never served). The encoded id is the
+  // session resource: the canonical identity is rebuilt from the id alone, so
+  // the cosmetic slug (XVideos redirects wrong slugs onto the canonical one),
+  // host and page state never change it, and every host collapses onto
+  // https://www.xvideos.com/video.<id> — the same normalization as the Node
+  // XvideosAdapter.
+  register({
+    adapterId: 'xvideos',
+    name: 'XVideos',
+    domain: 'xvideos.com',
+    // Current-shape video pages only: /video.<encoded-id>/<slug>.
+    urlRule: { source: '^https?://(?:[^/]+\\.)?xvideos\\.com/video\\.([A-Za-z0-9]+)/[^/?#]+$', flags: '' },
+    capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    deriveIdentity(url) {
+      const match = url.href.match(/^https?:\/\/(?:[^/]+\.)?xvideos\.com\/video\.([A-Za-z0-9]+)\/[^\/?#]+$/);
+      if (!match) return undefined;
+      return { canonicalUrl: `https://www.xvideos.com/video.${match[1]}`, resourceId: match[1] };
+    },
+  });
+
   // --- Public API ----------------------------------------------------------------
 
   global.AnyTogetherIdentity = {
