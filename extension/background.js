@@ -53,6 +53,8 @@ const SESSION = {
   hostTabId: null, // host mode's apply target: the tab the host page plays in;
   // its content-ready identity changes trigger resource-bind
   bindInFlight: null, // resource identity of a resource-bind sent but not yet adopted
+  pendingLocalPermission: null, // { origin, pattern, canonicalUrl } awaiting popup user gesture
+  injectedLocalTabs: new Set(), // local-video tabs injected after navigation
   identity: null, // session ResourceIdentity; adopted from join-accepted or a
   // newer authoritative state after a participant resource-bind
   // Client-only one-time auto recovery: once the authority reports the session
@@ -81,6 +83,115 @@ const CREATE_TAB_THROTTLE_MS = 10000;
 const DEFAULT_PORT = 8765;
 
 // --- identity helpers (delegated to the shared AnyTogetherIdentity registry) --
+
+// --- local-video runtime permission and injection ---------------------------
+
+function localPermissionDescriptor(url) {
+  const identity = IDENTITY.deriveIdentity(url);
+  if (!identity || identity.adapterId !== 'local-video') return null;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:') return null;
+  return {
+    origin: parsed.origin,
+    pattern: `${parsed.origin}/*`,
+    canonicalUrl: `${parsed.origin}${parsed.pathname.replace(/\/$/, '')}`,
+  };
+}
+
+function setLocalPermissionPrompt(descriptor) {
+  const previous = SESSION.pendingLocalPermission;
+  SESSION.pendingLocalPermission = descriptor;
+  if (!previous || previous.origin !== descriptor.origin) {
+    notifyPopup({ type: 'local-permission-request', permission: descriptor });
+  }
+  setNotice(`本地视频需要访问 ${descriptor.origin}，请在扩展窗口中授权`);
+}
+
+async function ensureLocalOriginPermission(url) {
+  const descriptor = localPermissionDescriptor(url);
+  if (descriptor === null) return true;
+  if (typeof chrome.permissions?.contains !== 'function') {
+    setNotice('当前浏览器不支持本地视频权限检查');
+    setLocalPermissionPrompt(descriptor);
+    return false;
+  }
+  let granted = false;
+  try {
+    granted = await chrome.permissions.contains({ origins: [descriptor.pattern] });
+  } catch (error) {
+    setNotice(`无法检查本地视频权限: ${error instanceof Error ? error.message : String(error)}`);
+    setLocalPermissionPrompt(descriptor);
+    return false;
+  }
+  if (granted) {
+    if (SESSION.pendingLocalPermission?.origin === descriptor.origin) {
+      SESSION.pendingLocalPermission = null;
+      notifyPopup({ type: 'local-permission-granted', origin: descriptor.origin });
+    }
+    return true;
+  }
+  setLocalPermissionPrompt(descriptor);
+  return false;
+}
+
+async function ensureLocalContentScript(tabId) {
+  let tab;
+  try {
+    tab = await chrome.tabs.get(tabId);
+  } catch {
+    return false;
+  }
+  if (!tab?.url || localPermissionDescriptor(tab.url) === null) return true;
+  if (!(await ensureLocalOriginPermission(tab.url))) return false;
+  // A service-worker restart loses the in-memory Set. Ping first so a second
+  // injection cannot create duplicate listeners/timers in the page.
+  try {
+    const reply = await chrome.tabs.sendMessage(tabId, { type: 'content-ping' });
+    if (reply?.ok === true) {
+      SESSION.injectedLocalTabs.add(tabId);
+      return true;
+    }
+  } catch {
+    // No content script yet; execute it below.
+  }
+  if (typeof chrome.scripting?.executeScript !== 'function') {
+    setNotice('当前浏览器不支持动态注入本地视频同步脚本');
+    return false;
+  }
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ['identity.js', 'content.js'],
+    });
+    SESSION.injectedLocalTabs.add(tabId);
+    return true;
+  } catch (error) {
+    setNotice(`本地视频同步脚本注入失败: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
+function handleLocalPermissionResult(origin, granted) {
+  const pending = SESSION.pendingLocalPermission;
+  if (!pending || pending.origin !== origin) {
+    return { ok: false, error: '没有待处理的本地视频权限请求' };
+  }
+  if (granted === true) {
+    SESSION.pendingLocalPermission = null;
+    SESSION.notice = null;
+    notifyPopup({ type: 'local-permission-granted', origin });
+    enqueueApply();
+    return { ok: true };
+  }
+  setNotice(`未授权访问 ${origin}，本地视频不会开始同步`);
+  return { ok: true, granted: false };
+}
+
 // deriveIdentity / identityEqual / isSupportedUrl live in extension/identity.js
 // so no domain logic is duplicated in this worker.
 
@@ -152,6 +263,7 @@ function setStatus(status) {
       ? buildShare(SESSION.host, SESSION.port, SESSION.sessionId)
       : null,
     canonicalUrl: SESSION.identity ? SESSION.identity.canonicalUrl : null,
+    localPermission: SESSION.pendingLocalPermission,
     lastError: SESSION.lastError,
   });
 }
@@ -288,6 +400,8 @@ async function connect(options) {
     SESSION.ws = null;
     SESSION.clientTabId = null;
     SESSION.hostTabId = null;
+    SESSION.pendingLocalPermission = null;
+    SESSION.injectedLocalTabs.clear();
     SESSION.bindInFlight = null;
     SESSION.clientAutoRecoveredFingerprint = null;
     SESSION.clientRecoverInFlight = null;
@@ -316,6 +430,8 @@ function disconnect() {
   SESSION.hostTabId = null;
   SESSION.bindInFlight = null;
   SESSION.clientAutoRecoveredFingerprint = null;
+  SESSION.pendingLocalPermission = null;
+  SESSION.injectedLocalTabs.clear();
   SESSION.clientRecoverInFlight = null;
   SESSION.lastAppliedRevision = -1;
   SESSION.role = null;
@@ -481,6 +597,7 @@ function clearApplyTarget() {
 }
 
 async function routeCanonical(canonicalUrl) {
+  if (!(await ensureLocalOriginPermission(canonicalUrl))) return;
   if (!IDENTITY.isSupportedUrl(canonicalUrl)) return; // never open unsupported destinations
 
   // Prefer the participant's own tab and overwrite its URL in place: a
@@ -628,8 +745,8 @@ async function sendApplyToTab(state) {
     await routeCanonical(canonicalUrl);
     if (applyTargetTabId() === null) return;
   }
-
   tabId = applyTargetTabId();
+  if (tabId === null || !(await ensureLocalContentScript(tabId))) return;
   try {
     await chrome.tabs.sendMessage(tabId, { type: 'apply-state', state });
     SESSION.lastAppliedRevision = state.stateRevision;
@@ -877,7 +994,16 @@ async function performClientRecovery() {
 
 // --- tab lifecycle --------------------------------------------------------------
 
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (changeInfo.status === 'loading') {
+    SESSION.injectedLocalTabs.delete(tabId);
+    return;
+  }
+  if (changeInfo.status === 'complete' && tabId === applyTargetTabId()) enqueueApply();
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
+  SESSION.injectedLocalTabs.delete(tabId);
   // The apply-target tab is gone: drop it so a fresh page's content-ready
   // re-registers and re-applies; while the page is gone, re-route the latest
   // state so the session page comes back. The socket, session, latest state,
@@ -913,6 +1039,7 @@ chrome.tabs.onActivated.addListener((info) => {
 
 // --- message router -----------------------------------------------------------
 
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!message || typeof message !== 'object' || typeof message.type !== 'string') return undefined;
 
@@ -930,6 +1057,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       disconnect();
       sendResponse({ ok: true });
       return undefined;
+    case 'local-permission-result': {
+      const origin = typeof message.origin === 'string' ? message.origin : '';
+      sendResponse(handleLocalPermissionResult(origin, message.granted === true));
+      return undefined;
+    }
     case 'get-local-session': {
       // Popup helper: read the local companion Session API (host mode
       // auto-fetch, client mode same-machine fill). Always 127.0.0.1 — the
@@ -1000,6 +1132,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sessionStatus: SESSION.latestStatus,
         lastDiagnostic: SESSION.lastDiagnostic,
         pendingJoin: SESSION.pendingJoin,
+        localPermission: SESSION.pendingLocalPermission,
       });
       return undefined;
 

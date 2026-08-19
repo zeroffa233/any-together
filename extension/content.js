@@ -298,7 +298,12 @@ function sendToBackground(message) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!message || typeof message !== 'object' || message.type !== 'apply-state') return undefined;
+  if (!message || typeof message !== 'object') return undefined;
+  if (message.type === 'content-ping') {
+    sendResponse({ ok: true, identity: PAGE.identity });
+    return undefined;
+  }
+  if (message.type !== 'apply-state') return undefined;
 
   void (async () => {
     const state = message.state;

@@ -19,3 +19,10 @@ pnpm-debug.log*
 *.swp
 *.swo
 .idea/
+
+# Agent tooling, generated planning state, and obsolete design archives
+.claude/
+skills/
+_bmad/
+_bmad-output/
+docs/old_designs/

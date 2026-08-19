@@ -1,8 +1,8 @@
 # 本地视频局域网广播（Phase 2）实现/设计文档
 
-> 本文档是 Phase 2「本地视频快速广播为局域网资源」的实现与交接文档：先交付**服务器基础（server foundation）**，再在下一阶段补齐浏览器扩展的运行时权限/注入。PDF 标量协议（Phase 3）不在本文档范围内，只记录复用边界。
+> 本文档记录 Phase 2「本地视频快速广播为局域网资源」的服务端、浏览器扩展接入和验证边界。PDF 标量协议（Phase 3）不在本文档范围内，只记录复用边界。
 >
-> 状态标记：`[本波次]` 本波次（服务器基础）交付；`[未实现]` 明确未实现，属于下一阶段或后续阶段。
+> 状态标记：`[本波次]` 已实现；`[未验证]` 需要真实 Chrome/双设备环境；`[未实现]` 不属于当前交付。
 >
 > 上位文档：`docs/roadmap.md` §6（路线图，含 R7 评审项）、`docs/syncers/protocol.md` §7（资源身份协议视角，本文档的身份约定必须与之一致）。
 
@@ -12,18 +12,19 @@
 
 本地文件是"网页资源"的一个特例：伴随进程把用户明确指定的**单个本地视频文件**以带令牌的局域网 HTTP URL 暴露出来，该 URL 作为普通 `ResourceIdentity` 走现有 `resource-bind` 流程，播放/暂停/拖动/倍速完全复用网页同步语义。用户无需上传，资源不离开局域网。
 
-### 1.2 本波次交付（服务器基础，Node 侧闭环）
+### 1.2 本波次交付（服务器 + 扩展接入）
 
 - `LocalMediaServer`（`src/server/local-media-server.ts`）：tokenized 单文件共享，GET/HEAD + HTTP Range 流式服务，安全 MIME 映射，与路径无关的 token 查表，普通文件校验，方法/状态码/响应头语义，start/stop 生命周期。
 - 资源身份辅助（`src/shared/local-resource.ts`）：`local-video` 身份构造/校验 + share URL 构造。
-- 主机 CLI（`src/cli/host.ts` 修改）：`--share <绝对路径>` 与可选 `--media-port <port>`；未给 `--share` 时不创建任何媒体监听（现有行为不变）。
-- 自动化测试：`tests/server/local-media-server.test.ts`（Range/鉴权/流式/生命周期）、`tests/integration/local-video-resource.test.ts`（身份契约）。
+- 主机 CLI（`src/cli/host.ts`）：`--share <绝对路径>` 与可选 `--media-port <port>`；未给 `--share` 时不创建媒体监听。
+- 浏览器扩展接入：`identity.js` 注册动态 IPv4/localhost `local-video` URL；`manifest.json` 声明 `scripting` 与可选 HTTP host 权限；`background.js` 通过 popup 用户手势申请当前 origin 权限，随后动态注入 `identity.js + content.js`，并复用现有 tab 路由/播放同步链路；popup 显示授权卡片。
+- 自动化测试：服务端、资源身份、Session 集成和 `tests/integration/local-video-extension.test.ts` 的浏览器注册/Manifest 行为测试。
 
-### 1.3 明确不在本波次（防止误读为已实现）
+### 1.3 当前未完成或未验证项
 
-- **[未实现]** 浏览器扩展对任意局域网 IP 的运行时权限与内容脚本注入（manifest/identity.js/background.js 改动）——见 §10。
-- **[未实现]** 本地视频的端到端浏览器播放（从机扩展打开共享 URL → 内容脚本接管 → 通用媒体适配器同步）——依赖 §10 的权限闸口，本波次**不声称**已支持。
-- **[未实现]** PDF/标量同步（Phase 3 的 sync-item 协议）——见 §11 复用边界。
+- **[未验证]** 真实 Chrome 加载扩展、权限弹窗和本地 `<video>` 播放端到端；当前已通过 Node 行为测试、扩展脚本语法检查、Manifest 解析、构建与本地 socket/进程冒烟。
+- **[未验证]** 两台真实 Mac/Windows 设备的 play/pause/seek/rate 收敛、防火墙和编解码器矩阵。
+- **[未实现]** PDF/标量同步（Phase 3 的 sync-item 协议）。
 
 ## 2. 用户流程
 
@@ -34,9 +35,9 @@
 3. 从机收到 URL，扩展打开该 URL；内容脚本在该源上运行（权限闸口见 §10），通用媒体适配器接管播放。
 4. 播放/暂停/拖动/倍速复用网页同步语义；拖动依赖服务端 Range 请求。
 
-### 2.2 本波次可验证范围
+### 2.2 当前可验证范围
 
-第 1–2 步在 Node 侧闭环（CLI 打印 URL → 身份构造 → 绑定进 `SessionAuthority`）；第 3–4 步的浏览器侧 `[未实现]`。自动化测试只验证服务端语义与身份契约，**不以单测冒充端到端浏览器支持**。
+第 1–4 步已经在 Node/扩展代码层闭环：CLI 生成并绑定 token URL；双方收到权威 `local-video` identity；未授权时 popup 请求当前 `http://<lan-ip>:<port>/*` 权限；用户允许后 background 路由当前 tab，并动态注入通用 `identity.js + content.js`。真实 Chrome/双设备播放仍是 `[未验证]`，不得以 Node fake page 测试替代实机证据。
 
 ## 3. URL 与令牌契约
 
@@ -165,27 +166,34 @@ node dist/src/cli/host.js 8765
 - **防火墙**：macOS/Windows 首次监听可能弹窗打断流程——CLI 打印引导文案（loopback 形式不受防火墙影响）；记录为实机验证项。
 - **大文件/弱网**：流式 + Range 缓解，不做 P2P 分发（roadmap 6.6 记录，未来 `[需评审]`）。
 
-## 10. 浏览器扩展权限闸口（下一阶段，`[未实现]`）
+## 10. 浏览器扩展权限闸口（已实现，实机待验证）
 
-服务器基础不依赖以下任何一项；本波次**不声称**本地视频端到端浏览器支持。下一阶段必须解决：
+本阶段不使用 `<all_urls>` 静态注入。主机 CLI 仍是唯一需要运行的伴随进程；从机只需安装扩展，首次访问某个主机的本地视频 origin 时在 popup 明确授权。
 
-### 10.1 问题本质
+### 10.1 运行流程
 
-- manifest 的 `content_scripts.matches` / `host_permissions` 是**安装期静态**站点清单（当前仅 Bilibili/YouTube 的 https 条目），无法静态覆盖未知的局域网 IP:port。
-- `extension/identity.js` 注册模型按域名注册、按 hostname 精确/子域匹配，任意 LAN IP 无法静态注册。
-- 注：`<video>` 播放本身不需要 CORS/host 权限——**内容脚本注入是唯一闸口**。
+```text
+权威状态携带 http://<lan-ip>:<media-port>/local/<token>/video/<file>
+  -> identity.js 的 local-video 注册项解析动态 IPv4/localhost URL
+  -> background 暂停路由并记录 origin + origin/* 权限请求
+  -> popup 展示“本地视频访问授权”卡片
+  -> 用户点击允许（chrome.permissions.request，保持用户手势）
+  -> background 检查权限并 tabs.update 当前参与者 tab
+  -> chrome.scripting.executeScript 注入 identity.js + content.js
+  -> content-ready 触发现有权威状态 apply/report 链路
+```
 
-### 10.2 候选方案（需用户拍板，roadmap R7）
+### 10.2 权限与匹配边界
 
-1. `<all_urls>` 宽注入：简单但权限过宽，与最小权限原则冲突。
-2. 精确注入：`optional_host_permissions` + `chrome.permissions.request({ origins: ['http://<ip>:<port>/*'] })` + `chrome.scripting.registerContentScripts`（需 `scripting` 权限 + 用户手势）。
-3. identity.js 需新增运行时多 host 注册 API（同一 `local-video` adapterId 挂多个 IP 字面量 host），background 收到会话 URL 后先注册再路由。
+- `manifest.json` 只增加 `scripting` 和 `optional_host_permissions: ["http://*/*"]`；运行时实际请求的是当前 `origin/*`，不是全站静态 host permission。
+- `identity.js` 的 `local-video` 使用 wildcard URL 注册，但 URL rule 限制为 HTTP、localhost/合法 IPv4、`/local/<token>/video/<filename>`；公共域名、HTTPS、错误路径不会解析为本地资源。
+- 本地视频不加入静态 `content_scripts.matches`，避免对任意 LAN 页面自动注入；动态注入前通过 `chrome.permissions.contains` 再检查，脚本重启后用 `content-ping` 防止重复 listener/timer。
+- `routeCanonical` 继续复用现有单 tab 路由：权限未获批时不打开资源页；授权后覆盖当前 host/client tab，不创建重复播放窗口。
 
-### 10.3 已确认的复用面（服务端合入后即成立）
+### 10.3 未验证边界
 
-- `background.js` 的 `routeCanonical`/apply/report 链路是 URL 无关的：一旦 `IDENTITY.isSupportedUrl(canonicalUrl)` 通过，现有路由与状态应用原样复用。
-- `content.js` 本就是与站点无关的 HTMLMediaElement 驱动（对应 roadmap 6.4「复用 generic-media」）。
-- 遗留待实机确认：background fetch `http://127.0.0.1` 本机 API 是否需要补 `host_permissions`（真实 Chrome 行为）。
+- 需要真实 Chrome 验证 MV3 权限请求、service worker 生命周期、HTTP 局域网媒体加载、autoplay 策略和跨设备防火墙。
+- 本地服务使用高熵 token；权限只解决内容脚本注入，不替代 token 访问控制。媒体服务仍只绑定明确共享文件。
 
 ## 11. PDF 复用边界与非目标
 
@@ -204,22 +212,22 @@ node dist/src/cli/host.js 8765
 
 | 验收（roadmap 6.5 对应） | 落地 |
 |---|---|
-| 主机共享本地 mp4，从机经局域网 URL 播放（play/pause/seek/rate 收敛基线） | 服务器侧闭环 `[本波次]`；浏览器端到端 `[未实现]`，待 §10 |
-| Range 请求验证（seek 秒级开始、不整文件下载） | `tests/server/local-media-server.test.ts`（200/206/416/HEAD/If-Range/并发） |
-| 无令牌请求被拒绝；未共享时不监听局域网媒体端口 | 坏 token/未知路径统一 404（roadmap 验收原文写 403，实现取 404 以不区分资源存在性，语义一致）；CLI 无 `--share` 行为不变 |
-| 两端编解码器不一致显式报错而非黑屏挂起 | 服务器侧不可测（浏览器行为）；`'error'` 相位路径协议已有，实机验证项 |
-| 既有测试全绿 + 媒体服务/身份测试 | 本波次测试 + 主验证全量回归 |
+| 主机共享本地 mp4，从机经局域网 URL 播放（play/pause/seek/rate 收敛基线） | CLI/身份/路由/动态注入代码已落地 `[本波次]`；真实 Chrome/双设备播放 `[未验证]` |
+| Range 请求验证（seek 秒级开始、不整文件下载） | `tests/server/local-media-server.test.ts`（200/206/416/HEAD/并发） |
+| 无令牌请求被拒绝；未共享时不监听局域网媒体端口 | 坏 token/未知路径统一 404；CLI 无 `--share` 行为不变 |
+| 两端编解码器不一致显式报错而非黑屏挂起 | 协议 `'error'` 相位已有；真实浏览器行为 `[未验证]` |
+| 既有测试全绿 + 媒体服务/身份/扩展注册测试 | `npm test` 224/224；`smoke:lan`、`smoke:process` 通过；扩展脚本/Manifest 静态检查通过 |
 
-文件地图：`src/server/local-media-server.ts`（新建）、`src/shared/local-resource.ts`（新建）、`src/cli/host.ts`（修改）、`tests/server/local-media-server.test.ts`（新建）、`tests/integration/local-video-resource.test.ts`（新建）、本文档（新建）。
+文件地图：`src/server/local-media-server.ts`、`src/shared/local-resource.ts`、`src/cli/host.ts`、`extension/manifest.json`、`extension/identity.js`、`extension/background.js`、`extension/content.js`、`extension/popup.html`、`extension/popup.js`、`tests/integration/local-video-extension.test.ts`。
 
-## 13. 交接给下一阶段
+## 13. 交接与实机验证
 
-下一阶段（扩展权限/注入 + 端到端验证）开始前需要：
+服务器和扩展接入已完成，下一步只做真实环境验证与缺陷修复：
 
-1. **用户拍板注入方案**（§10.2：`<all_urls>` vs 运行时权限请求），评审产出决定 + 记录（roadmap R7）。
-2. identity.js 运行时多 host 注册 API + background 路由接线（§10.2-3）。
-3. manifest 作用域/权限修改 + 真实 Chrome 加载验证（含 127.0.0.1 fetch 权限确认）。
-4. 真实双机共享验证：play/pause/seek（拖动到未缓冲区间）/rate 收敛基线、防火墙引导记录、编解码器矩阵显式报错记录。
-5. 共享 URL 的 popup 展示（SessionInfo 的 mediaUrl/mediaPort 可选字段，随实现波次决定）。
+1. 在主机运行 `node dist/src/cli/host.js 8765 --share /绝对路径/video.mp4`。
+2. 主机和从机都加载/重新加载 MV3 扩展；主机 popup 选择“主机”并连接本机 Session，从机 popup 选择“从机”并填写主机 LAN IP、WS 端口和 Session ID。
+3. 从机收到本地 URL 后，在 popup 点击“允许并继续同步”；两端等待页面加载和就绪状态。
+4. 在任一端原生播放器执行 play/pause/seek/rate，记录双方收敛、Range 请求、防火墙和编解码器结果。
+5. 若实机发现问题，只修复对应扩展/媒体边界；不把真实 Chrome/双设备结果用 Node 测试替代。
 
-本波次服务器基础合入时，以上 1–4 项**保持未实现状态**，文档与代码均不得声称已支持本地视频端到端浏览器同步。
+未来 PDF 仍复用 tokenized 字节服务，但需要另行评审 `sync-item` 标量协议。

@@ -5,10 +5,11 @@
  *
  * Single source of truth for "which site syncer serves a page URL" inside the
  * extension: URL matching (registrable domain + subdomains, optionally refined
- * by a URL rule), canonical resource-identity derivation, and the static
- * capability set each syncer advertises. Both the content script and the MV3
- * background service worker load this file (manifest order / importScripts),
- * so no site-specific URL or identity logic lives in either script.
+ * by a URL rule or a custom URL predicate), canonical resource-identity derivation,
+ * and the static capability set each syncer advertises. Both the content script
+ * and the MV3 background service worker load this file (manifest order /
+ * importScripts), so no site-specific URL or identity logic lives in either
+ * script.
  *
  * Adding a new syncer means registering it here — domain (+ optional URL rule),
  * identity derivation hook and capabilities. content.js and background.js stay
@@ -25,14 +26,13 @@
   const compiledRules = new WeakMap();
 
   /**
-   * Canonical form of a registrable domain: trimmed, lowercased, trailing dots
-   * removed, free of scheme/port/wildcard/whitespace characters. Null when the
-   * input is not usable as a domain.
+   * Canonical form of a registrable domain. `*` is reserved for a registration
+   * that supplies both a restrictive URL rule and a custom URL predicate.
    */
   function normalizeDomain(domain) {
     if (typeof domain !== 'string') return null;
     const normalized = domain.trim().toLowerCase().replace(/\.+$/, '');
-    if (normalized.length === 0) return null;
+    if (normalized.length === 0 || normalized === '*') return normalized || null;
     if (/[\s/:*?]/.test(normalized)) return null;
     return normalized;
   }
@@ -90,6 +90,7 @@
       name: typeof registration.name === 'string' ? registration.name : adapterId,
       domain,
       urlRule: registration.urlRule,
+      matchUrl: typeof registration.matchUrl === 'function' ? registration.matchUrl : undefined,
       capabilities: Array.isArray(registration.capabilities) ? registration.capabilities.slice() : [],
       deriveIdentity: typeof registration.deriveIdentity === 'function' ? registration.deriveIdentity : undefined,
     };
@@ -100,10 +101,11 @@
     registrations.push(entry);
   }
 
-  /** Domain/subdomain + optional URL-rule match of one entry against a parsed URL. */
+  /** Domain/subdomain + optional URL-rule/custom predicate match. */
   function matchesUrl(entry, url) {
     const hostname = url.hostname.toLowerCase();
-    if (hostname !== entry.domain && !hostname.endsWith(`.${entry.domain}`)) return false;
+    if (entry.domain !== '*' && hostname !== entry.domain && !hostname.endsWith(`.${entry.domain}`)) return false;
+    if (typeof entry.matchUrl === 'function' && !entry.matchUrl(url)) return false;
     const rule = compiledRules.get(entry);
     return rule === undefined || rule.test(url.href);
   }
@@ -191,6 +193,34 @@
   function list() {
     return registrations.slice();
   }
+
+  // Local video shares are served over HTTP by the companion process on an
+  // IPv4 LAN address (or localhost). The wildcard domain is constrained by
+  // matchUrl and the URL rule; it does not make arbitrary pages supported.
+  register({
+    adapterId: 'local-video',
+    name: '本地视频',
+    domain: '*',
+    urlRule: {
+      source: '^http://(?:localhost|(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3})(?::\\d+)?/local/[A-Za-z0-9_-]+/video/[^/?#]+(?:[?#].*)?$',
+      flags: '',
+    },
+    matchUrl(url) {
+      return url.protocol === 'http:';
+    },
+    capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    deriveIdentity(url) {
+      const match = url.pathname.match(/^\/local\/[A-Za-z0-9_-]+\/video\/([^/]+)$/);
+      if (!match) return undefined;
+      try {
+        const resourceId = decodeURIComponent(match[1]);
+        if (!resourceId || resourceId === '.' || resourceId === '..') return undefined;
+        return { resourceId };
+      } catch {
+        return undefined;
+      }
+    },
+  });
 
   // --- Built-in syncers --------------------------------------------------------
 

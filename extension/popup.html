@@ -588,6 +588,16 @@
       color: var(--color-danger);
     }
 
+    .permission-origin {
+      margin: var(--space-2) 0 0;
+      padding: var(--space-2);
+      border: 1px solid var(--color-border);
+      border-radius: var(--radius-control);
+      background: var(--color-surface-muted);
+      color: var(--color-text);
+      word-break: break-all;
+    }
+
     /* --- loading ------------------------------------------------------------- */
 
     .loading-state {
@@ -806,6 +816,17 @@
         <button id="disconnect" type="button" class="danger" hidden>断开</button>
         <button id="view-diagnostic" type="button" class="secondary" hidden>查看诊断</button>
         <button id="switch-role" type="button" class="secondary" hidden></button>
+      </div>
+    </section>
+
+    <section id="local-permission" class="card" aria-labelledby="local-permission-title" hidden>
+      <h2 id="local-permission-title" class="card-title">本地视频访问授权</h2>
+      <p>从机需要访问主机提供的局域网视频。只申请当前地址的 HTTP 权限，不扩大到其他网站。</p>
+      <p id="local-permission-origin" class="permission-origin selectable">—</p>
+      <p id="local-permission-status" class="field-hint" role="status"></p>
+      <div class="row">
+        <button id="grant-local-permission" type="button" class="primary">允许并继续同步</button>
+        <button id="deny-local-permission" type="button" class="secondary">暂不授权</button>
       </div>
     </section>
 

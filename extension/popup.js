@@ -15,7 +15,7 @@
 
 const $ = (id) => document.getElementById(id);
 
-const ADAPTER_LABELS = { bilibili: 'Bilibili', youtube: 'YouTube' };
+const ADAPTER_LABELS = { bilibili: 'Bilibili', youtube: 'YouTube', 'local-video': '本地视频' };
 
 const PHASE_LABELS = {
   loading: '加载中',
@@ -92,6 +92,8 @@ let fetchInFlight = false; // local Session API read in progress
 let prevStatus = 'disconnected';
 let sessionStatusSeq = 0; // event ordering: a session-status newer than the
 let diagnosticSeq = 0; // last diagnostic wins (fresh ready=true clears degraded)
+let localPermission = null; // pending { origin, pattern, canonicalUrl } from background
+let permissionInFlight = false;
 let panelOpen = false;
 
 // --- messaging & one-at-a-time feedback -------------------------------------
@@ -422,6 +424,7 @@ function renderStatus(info) {
   lastStatus = info.status;
   lastErrorText = info.lastError ?? null;
   lastStatusInfo = info;
+  localPermission = info.localPermission ?? null;
 
   if (lastStatus === 'connected') {
     actualRole = info.role ?? null;
@@ -464,6 +467,7 @@ function renderStatus(info) {
   renderConnectionDetails();
   renderShareText(info.share);
   renderDiagnosticDrawer();
+  renderLocalPermission();
   showError(info.lastError ?? '');
 }
 
@@ -548,7 +552,7 @@ function renderResourceCard() {
   if (!identity) {
     body.hidden = true;
     empty.hidden = false;
-    empty.textContent = '尚未绑定资源。主机请在支持的 Bilibili/YouTube 视频页打开或刷新；从机将等待主机共享资源。';
+    empty.textContent = '尚未绑定资源。主机请在支持的视频页打开或使用本地视频广播；从机将等待主机共享资源。';
     return;
   }
   empty.hidden = true;
@@ -557,6 +561,69 @@ function renderResourceCard() {
   $('resource-url').textContent = identity.canonicalUrl;
   updatePlaybackFields();
 }
+
+function renderLocalPermission() {
+  const card = $('local-permission');
+  const show = !!localPermission && lastStatus === 'connected';
+  card.hidden = !show;
+  if (!show) return;
+  $('local-permission-origin').textContent = localPermission.origin;
+  $('grant-local-permission').disabled = permissionInFlight;
+  $('deny-local-permission').disabled = permissionInFlight;
+}
+
+async function grantLocalPermission() {
+  if (!localPermission || permissionInFlight) return;
+  const request = localPermission;
+  permissionInFlight = true;
+  $('local-permission-status').textContent = '正在请求浏览器权限…';
+  renderLocalPermission();
+  let granted = false;
+  try {
+    if (typeof chrome.permissions?.request !== 'function') {
+      throw new Error('当前浏览器不支持运行时权限请求');
+    }
+    granted = await chrome.permissions.request({ origins: [request.pattern] });
+  } catch (error) {
+    $('local-permission-status').textContent = error instanceof Error ? error.message : String(error);
+    permissionInFlight = false;
+    renderLocalPermission();
+    return;
+  }
+  const reply = await send({ type: 'local-permission-result', origin: request.origin, granted });
+  permissionInFlight = false;
+  if (!reply || reply.ok === false) {
+    $('local-permission-status').textContent = reply?.error ?? '权限结果未能发送到后台';
+    renderLocalPermission();
+    return;
+  }
+  if (!granted) {
+    $('local-permission-status').textContent = '未授权。点击“允许并继续同步”可再次请求。';
+    renderLocalPermission();
+    return;
+  }
+  localPermission = null;
+  renderLocalPermission();
+  showNotice('已授权本地视频地址，正在打开并注入同步脚本');
+}
+
+async function denyLocalPermission() {
+  if (!localPermission || permissionInFlight) return;
+  const origin = localPermission.origin;
+  permissionInFlight = true;
+  const reply = await send({ type: 'local-permission-result', origin, granted: false });
+  permissionInFlight = false;
+  if (!reply || reply.ok === false) {
+    $('local-permission-status').textContent = reply?.error ?? '无法取消本地视频授权请求';
+    renderLocalPermission();
+    return;
+  }
+  localPermission = null;
+  renderLocalPermission();
+  showNotice('已暂不授权本地视频地址');
+}
+
+// --- join approval (spec §6.2) ------------------------------------------------
 
 function updatePlaybackFields() {
   if (!currentState) return;
@@ -842,7 +909,17 @@ chrome.runtime.onMessage.addListener((message) => {
       renderDiagnosticDrawer();
       renderBanner();
       break;
+    case 'local-permission-request':
+      localPermission = message.permission ?? null;
+      renderLocalPermission();
+      break;
+    case 'local-permission-granted':
+      if (localPermission?.origin === message.origin) localPermission = null;
+      renderLocalPermission();
+      showNotice('已授权本地视频地址，正在继续同步');
+      break;
     case 'notice':
+      renderLocalPermission();
       showNotice(message.text);
       break;
     case 'join-request':
@@ -916,6 +993,14 @@ $('joinaccept').addEventListener('click', () => {
 
 $('joinreject').addEventListener('click', () => {
   void sendJoinDecision(false);
+});
+
+$('grant-local-permission').addEventListener('click', () => {
+  void grantLocalPermission();
+});
+
+$('deny-local-permission').addEventListener('click', () => {
+  void denyLocalPermission();
 });
 
 $('view-diagnostic').addEventListener('click', () => {
