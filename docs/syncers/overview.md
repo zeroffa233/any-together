@@ -105,7 +105,7 @@ sequenceDiagram
 
 | 术语 | 定义（与源代码一致） |
 |---|---|
-| `adapterId` | 同步器稳定标识；同时是资源身份的名字空间（`ResourceIdentity.adapterId`）。当前内置值：`'bilibili'`、`'youtube'`。 |
+| `adapterId` | 同步器稳定标识；同时是资源身份的名字空间（`ResourceIdentity.adapterId`）。当前内置值：`'bilibili'`、`'youtube'`、`'missav'`、`'pornhub'`、`'xvideos'`、`'local-video'`（动态 LAN IPv4/localhost）、`'arxiv-pdf'`（共享标量项，见 protocol.md §10）。 |
 | `ResourceIdentity` | `{ adapterId, canonicalUrl, resourceId? }`；canonicalUrl = origin + 去尾斜杠 pathname，去 query/hash。 |
 | `canonicalUrl` | 同一资源映射到唯一身份的比较键；同一资源的所有 URL 形式归一为同一个值。 |
 | `resourceId` | 可选站点内稳定资源键（如 Bilibili 的 BV 号、YouTube 的视频 id）；没有则不出现该字段。 |
