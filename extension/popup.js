@@ -15,7 +15,7 @@
 
 const $ = (id) => document.getElementById(id);
 
-const ADAPTER_LABELS = { bilibili: 'Bilibili', youtube: 'YouTube', 'local-video': '本地视频' };
+const ADAPTER_LABELS = { bilibili: 'Bilibili', youtube: 'YouTube', 'local-video': '本地视频', 'arxiv-pdf': 'arXiv PDF' };
 
 const PHASE_LABELS = {
   loading: '加载中',

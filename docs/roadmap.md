@@ -242,7 +242,7 @@ AnyTogether 不是"视频同步框架"，而是"网页资源同步框架"。可�
 - issue：媒体服务和扩展接入暴露的实机缺陷修复。
 - PR：服务与扩展接入已可独立合入；端到端实机验证单独记录。
 
-## 7. Phase 3 —— arXiv PDF 滚动/缩放
+## 7. Phase 3 —— arXiv PDF 滚动/缩放（标量同步，代码已落地）
 
 ### 7.1 目标
 
@@ -254,30 +254,28 @@ AnyTogether 不是"视频同步框架"，而是"网页资源同步框架"。可�
 2. 任一端滚动或缩放，另一端以有界延迟跟随到同一位置/缩放。
 3. 两端阅读位置持续收敛（滚动为共享标量）；`[需评审]` 可选：双方各自阅读位置以在场态叠加显示（presence 首次落地）。
 
-### 7.3 核心模型变化（本阶段最大协议变更，必须评审）
+### 7.3 核心模型变化（已落地）
 
-- **sync-item 模型** `[需评审]`：会话权威状态从"单一媒体 playhead"推广为"适配器声明的可同步项集合"。每项声明 `{ key, semantic: 'playhead' | 'scalar', convergence: 'shared' | 'presence' }`；媒体场景即 `[{ media, playhead, shared }]`，向后兼容（媒体同步器的现有消息不变或仅加包装）。
-- **投影与收敛分派**：排序/版本/快照/诊断机制原样复用；按 semantic 分派投影（scalar = rate 0）与收敛判定（scalar 容差按单位，如滚动像素阈值；离散缩放按精确值）。
-- **事件节流** `[需评审]`：滚动是高频事件，复用 seek-drag 模式（结算提交 / 有界抑制窗口，参照现有 700ms 意图回声抑制），不得产生无限命令流。
-- **会话模型**：仍是单资源；PDF 会话与视频会话不同时共存（multi-resource `[需评审]` 独立立项）。
+- **sync-item 模型** `[已落地]`：`PlaybackState` 新增可选 `syncItemDefinitions`（schema：key/semantic/convergence/min/max/tolerance）与 `syncItems`（key→number 值表）。字段缺省 = 旧会话行为，旧客户端零改动兼容。协议详见 `docs/syncers/protocol.md` §10。
+- **投影与收敛分派** `[已落地]`：scalar 即 rate=0 游标，无时间外推；一致性按每项 `tolerance` 判定，失配产出阻断性 issue `sync-item-mismatch`；排序/版本/快照/广播机制原样复用。
+- **事件节流** `[已落地]`：滚动复用 seek-drag 模式——150ms 防抖结算提交 + 700ms 回声抑制窗口，防止命令风暴。
+- **会话模型**：仍是单资源；PDF 会话与视频会话不同时共存（multi-resource 独立立项）。
 
 ### 7.4 适配器扩展
 
-- `arxiv-pdf` 适配器：注册 `arxiv.org` + `/pdf/` URL 规则；目标对象为 arXiv HTML5 PDF 阅读器（pdf.js 系）的滚动容器与缩放状态；identity 用论文 ID（`/pdf/<id>`）。必须真实浏览器验证注入可行性（`[需评审]`：浏览器内置 PDF 查看器页面不可注入，arXiv 自有阅读器页面可注入——落地前以真实页面记录为准，不假设）。
-- 滚动位置用归一化值（scrollTop/scrollHeight，随缩放稳定）`[需评审]`。
-- 缩放作为第二个标量项。
+- `arxiv-pdf` `[已落地]`：注册 `arxiv.org` + `/pdf/<id>` URL 规则（manifest host_permissions/content_scripts 与 identity.js 三端一致），identity 用论文 ID，声明 `pdf.scroll`（归一化 0–1）与 `pdf.zoom`（0.25–4）两个共享标量项。
+- 页面侧读取归一化 scrollTop、缩放控件值或 data 属性回退；应用侧写 scrollTop 与缩放控件/CSS zoom。PDF.js 选择器优先（`#viewerContainer` 等），浏览器内置查看器不可注入时显式 unsupported，不伪装成功。
 
 ### 7.5 验收
 
-进入条件：Phase 2 完成；sync-item 协议评审通过并同步更新 `docs/syncers/protocol.md`（当前为 media-only，需扩展或新增附录）。
+进入条件：sync-item 协议扩展已随本波次合入 `docs/syncers/protocol.md` §10。
 
 完成条件：
 
-- 双端滚动位置在容差内收敛（真实页面验证 + 自动化测试各一）。
-- 缩放收敛为精确值。
-- 标量项不破坏既有媒体同步回归（媒体场景消息兼容或一次性迁移）。
-- 滚动节流有效：持续滚动不产生命令风暴（测试断言有界上报）。
-- 阅读器结构变化（arXiv 升级）时适配器失败显式可诊断。
+- 标量状态机与绑定幂等：绑定 revision bump、意图应用、同值 no-op、未知 key/越界拒绝（`tests/core/sync-items.test.ts`）。
+- 双真实 WebSocket 客户端标量收敛与 schema 保护：host 绑定后双端收敛同一 revision/value，client 换 schema 被拒 `not-host`（`tests/integration/sync-items.test.ts`）。
+- 全量回归 230/230 通过；`smoke:lan`、`smoke:process` 通过；扩展 JS/Manifest 静态检查通过。
+- **[未验证]** 真实 Chrome 双端 arXiv PDF 页面注入可行性（浏览器内置查看器 vs arXiv 自有阅读器）、滚动手感与节流体感。
 
 ### 7.6 风险
 
@@ -294,11 +292,8 @@ AnyTogether 不是"视频同步框架"，而是"网页资源同步框架"。可�
 
 ### 7.8 建议 issue/PR 拆分
 
-- issue：sync-item 协议设计评审（向后兼容策略、投影分派、节流语义）——先行，与同步器规范同步。
-- issue：arxiv-pdf 适配器 + 双端注册 + manifest 作用域。
-- issue：滚动/缩放节流与收敛实现（核心一致性监测扩展）。
-- issue：真实双机 PDF 阅读验证与手感评审。
-- PR：协议推广（核心 + 协议守卫测试）与适配器（独立文件）分 PR 合入。
+- issue：真实双机 PDF 阅读验证与手感评审（含阅读器 DOM 版本回归）。
+- PR：协议推广（核心 + 守卫测试）与适配器已同波次合入；实机验证单独记录。
 
 ## 8. Phase 4 —— RSSHub-like syncer 社区
 

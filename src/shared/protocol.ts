@@ -84,6 +84,50 @@ export type ResourceIdentity = {
   resourceId?: string;
 };
 
+/** A namespaced scalar item shared by all participants of one resource. */
+export type SyncItemDefinition = {
+  key: string;
+  semantic: 'scalar';
+  convergence: 'shared';
+  min: number;
+  max: number;
+  tolerance: number;
+};
+
+export type SyncItemValues = Record<string, number>;
+
+const SYNC_ITEM_KEY_PATTERN = /^[a-z][a-z0-9._-]{0,63}$/;
+
+export function isSyncItemDefinition(value: unknown): value is SyncItemDefinition {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return typeof candidate.key === 'string'
+    && SYNC_ITEM_KEY_PATTERN.test(candidate.key)
+    && candidate.semantic === 'scalar'
+    && candidate.convergence === 'shared'
+    && isNonNegativeFinite(candidate.min)
+    && isNonNegativeFinite(candidate.max)
+    && candidate.max >= candidate.min
+    && isNonNegativeFinite(candidate.tolerance);
+}
+
+export function isSyncItemDefinitions(value: unknown): value is SyncItemDefinition[] {
+  if (!Array.isArray(value)) return false;
+  const keys = new Set<string>();
+  return value.every((entry) => {
+    if (!isSyncItemDefinition(entry) || keys.has(entry.key)) return false;
+    keys.add(entry.key);
+    return true;
+  });
+}
+
+export function isSyncItemValues(value: unknown): value is SyncItemValues {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
+  return Object.entries(value).every(([key, itemValue]) => (
+    SYNC_ITEM_KEY_PATTERN.test(key) && typeof itemValue === 'number' && Number.isFinite(itemValue)
+  ));
+}
+
 /**
  * True when the identity is structurally well-formed (non-empty adapterId,
  * optional non-empty resourceId) AND the canonicalUrl is an `http(s)` URL.
@@ -147,6 +191,8 @@ export type PlaybackState = {
   lastCommandId: string | null;
   updatedAtMs: number;
   errorCode?: string;
+  syncItemDefinitions?: SyncItemDefinition[];
+  syncItems?: SyncItemValues;
 };
 
 export function isPlaybackState(value: unknown): value is PlaybackState {
@@ -162,15 +208,18 @@ export function isPlaybackState(value: unknown): value is PlaybackState {
   if (!Number.isFinite(candidate.positionAtMs)) return false;
   if (!isPositiveFinite(candidate.playbackRate)) return false;
   if (candidate.durationSeconds !== null && !isNonNegativeFinite(candidate.durationSeconds)) return false;
-  if (candidate.lastCommandId !== null && (typeof candidate.lastCommandId !== 'string' || candidate.lastCommandId.length === 0)) {
-    return false;
-  }
+  if (candidate.lastCommandId !== null && (typeof candidate.lastCommandId !== 'string' || candidate.lastCommandId.length === 0)) return false;
   if (!Number.isFinite(candidate.updatedAtMs)) return false;
-  if (candidate.errorCode !== undefined && (typeof candidate.errorCode !== 'string' || candidate.errorCode.length === 0)) {
-    return false;
+  if (candidate.errorCode !== undefined && (typeof candidate.errorCode !== 'string' || candidate.errorCode.length === 0)) return false;
+  if (candidate.syncItemDefinitions !== undefined && !isSyncItemDefinitions(candidate.syncItemDefinitions)) return false;
+  if (candidate.syncItems !== undefined && !isSyncItemValues(candidate.syncItems)) return false;
+  if (candidate.syncItemDefinitions !== undefined && candidate.syncItems !== undefined) {
+    const keys = new Set(candidate.syncItemDefinitions.map((definition) => definition.key));
+    if (Object.keys(candidate.syncItems).some((key) => !keys.has(key))) return false;
   }
   return true;
 }
+
 
 export type IntentKind = 'play' | 'pause' | 'seek' | 'set-rate' | 'replay';
 
@@ -248,6 +297,7 @@ export type ActualStateReport = {
   durationSeconds: number | null;
   adapterId: string;
   applyResult: 'applied' | 'rejected' | 'unsupported';
+  syncItems?: SyncItemValues;
   error?: string;
 };
 
@@ -271,6 +321,7 @@ export function isActualStateReport(value: unknown): value is ActualStateReport 
   if (typeof candidate.adapterId !== 'string' || candidate.adapterId.length === 0) return false;
   const applyResult = candidate.applyResult;
   if (applyResult !== 'applied' && applyResult !== 'rejected' && applyResult !== 'unsupported') return false;
+  if (candidate.syncItems !== undefined && !isSyncItemValues(candidate.syncItems)) return false;
   if (candidate.error !== undefined && (typeof candidate.error !== 'string' || candidate.error.length === 0)) return false;
   return true;
 }
@@ -358,12 +409,63 @@ export function isJoinDecision(value: unknown): value is JoinDecision {
     && typeof candidate.accepted === 'boolean';
 }
 
+export type SyncItemBindMessage = {
+  type: 'sync-item-bind';
+  participantId: string;
+  definitions: SyncItemDefinition[];
+  values: SyncItemValues;
+};
+
+export function isSyncItemBindMessage(value: unknown): value is SyncItemBindMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'sync-item-bind'
+    && typeof candidate.participantId === 'string'
+    && candidate.participantId.length > 0
+    && isSyncItemDefinitions(candidate.definitions)
+    && isSyncItemValues(candidate.values)
+    && candidate.definitions.every((definition) => (
+      Object.prototype.hasOwnProperty.call(candidate.values, definition.key)
+    ));
+}
+
+export type SyncItemIntent = {
+  type: 'sync-item-intent';
+  commandId: string;
+  sessionId: string;
+  participantId: string;
+  clientObservedRevision: number;
+  key: string;
+  value: number;
+  createdAtMs: number;
+};
+
+export function isSyncItemIntent(value: unknown): value is SyncItemIntent {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'sync-item-intent'
+    && typeof candidate.commandId === 'string'
+    && candidate.commandId.length > 0
+    && typeof candidate.sessionId === 'string'
+    && candidate.sessionId.length > 0
+    && typeof candidate.participantId === 'string'
+    && candidate.participantId.length > 0
+    && isNonNegativeInteger(candidate.clientObservedRevision)
+    && typeof candidate.key === 'string'
+    && SYNC_ITEM_KEY_PATTERN.test(candidate.key)
+    && typeof candidate.value === 'number'
+    && Number.isFinite(candidate.value)
+    && Number.isFinite(candidate.createdAtMs);
+}
+
 export type ClientMessage =
   | ClientJoin
   | ResourceBindMessage
   | PlaybackIntent
   | SnapshotRequest
   | ActualStateReport
+  | SyncItemBindMessage
+  | SyncItemIntent
   | JoinDecision;
 
 /** Sent to the host when a second participant requests to join. */
@@ -465,6 +567,7 @@ export type DiagnosticResourceComparison = {
 
 /** Authoritative-vs-actual state comparison embedded in desync diagnostics. */
 export type DiagnosticStateComparison = {
+  syncItems?: SyncItemValues;
   mediaPhase?: MediaPhase;
   positionSeconds?: number;
   playbackRate?: number;
@@ -502,6 +605,7 @@ export function isDiagnosticMessage(value: unknown): value is DiagnosticMessage 
     if (comparison === undefined) continue;
     if (typeof comparison !== 'object' || comparison === null) return false;
     const record = comparison as Record<string, unknown>;
+    if (record.syncItems !== undefined && !isSyncItemValues(record.syncItems)) return false;
     if (record.mediaPhase !== undefined && !isMediaPhase(record.mediaPhase)) return false;
     if (record.positionSeconds !== undefined && !isNonNegativeFinite(record.positionSeconds)) return false;
     if (record.playbackRate !== undefined && !isPositiveFinite(record.playbackRate)) return false;
@@ -533,7 +637,6 @@ export type ServerMessage =
   | SessionStatusMessage
   | DiagnosticMessage
   | ErrorMessage;
-
 /** Identity equality covers adapterId, canonicalUrl and resourceId. */
 export function isResourceIdentityEqual(a: ResourceIdentity, b: ResourceIdentity): boolean {
   return a.adapterId === b.adapterId

@@ -787,6 +787,33 @@ function sendIntent(kind, payload) {
   return intent.commandId;
 }
 
+function sendSyncItemBind(definitions, values) {
+  if (SESSION.status !== 'connected' || !SESSION.ws || SESSION.role !== 'host') return;
+  if (!Array.isArray(definitions) || !values || typeof values !== 'object') return;
+  SESSION.ws.send(JSON.stringify({
+    type: 'sync-item-bind',
+    participantId: SESSION.participantId,
+    definitions,
+    values,
+  }));
+}
+
+function sendSyncItemIntent(key, value) {
+  if (SESSION.status !== 'connected' || !SESSION.ws) return;
+  if (typeof key !== 'string' || typeof value !== 'number' || !Number.isFinite(value)) return;
+  SESSION.ws.send(JSON.stringify({
+    type: 'sync-item-intent',
+    commandId: `${SESSION.participantId}-sync-${++SESSION.nextCommandSeq}`,
+    sessionId: SESSION.sessionId,
+    participantId: SESSION.participantId,
+    clientObservedRevision: SESSION.latestState?.stateRevision ?? 0,
+    key,
+    value,
+    createdAtMs: Date.now(),
+  }));
+}
+
+
 function sendActualStateReport(snapshot, applyResult, error, fromHost = false) {
   if (SESSION.status !== 'connected' || !SESSION.ws || !SESSION.identity) return;
   if (!snapshot || typeof snapshot !== 'object') return;
@@ -817,6 +844,7 @@ function sendActualStateReport(snapshot, applyResult, error, fromHost = false) {
     durationSeconds: snapshot.durationSeconds ?? null,
     adapterId: (identity ? identity.adapterId : SESSION.identity.adapterId) ?? 'unknown',
     applyResult,
+    ...(snapshot.syncItems === undefined ? {} : { syncItems: snapshot.syncItems }),
   };
   if (error !== undefined && error !== null) report.error = String(error);
   SESSION.ws.send(JSON.stringify(report));
@@ -1173,6 +1201,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // create an extra one) and the apply pipeline re-runs for that tab. The
       // superseded page's later events are ignored because its sender tab id
       // no longer matches the apply target.
+      if (SESSION.role === 'host' && message.syncItemDefinitions && message.syncItems) {
+        sendSyncItemBind(message.syncItemDefinitions, message.syncItems);
+      }
       registerApplyTarget(tabId, message.hasVideo);
       return undefined;
     }
@@ -1192,6 +1223,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       } catch {
         // Not connected; the observation will resurface via actual-state.
       }
+      return undefined;
+    }
+    case 'user-sync-items': {
+      if (sender.tab?.id !== applyTargetTabId() || !message.values || typeof message.values !== 'object') return undefined;
+      for (const [key, value] of Object.entries(message.values)) sendSyncItemIntent(key, value);
       return undefined;
     }
     case 'apply-result': {

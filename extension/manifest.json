@@ -15,7 +15,9 @@
     "https://pornhub.com/view_video.php*",
     "https://*.pornhub.com/view_video.php*",
     "https://xvideos.com/video.*/*",
-    "https://*.xvideos.com/video.*/*"
+    "https://*.xvideos.com/video.*/*",
+    "https://arxiv.org/pdf/*",
+    "https://*.arxiv.org/pdf/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -36,7 +38,9 @@
         "https://pornhub.com/view_video.php*",
         "https://*.pornhub.com/view_video.php*",
         "https://xvideos.com/video.*/*",
-        "https://*.xvideos.com/video.*/*"
+        "https://*.xvideos.com/video.*/*",
+        "https://arxiv.org/pdf/*",
+        "https://*.arxiv.org/pdf/*"
       ],
       "js": ["identity.js", "content.js"],
       "run_at": "document_idle"

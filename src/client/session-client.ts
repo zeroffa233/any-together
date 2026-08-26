@@ -16,6 +16,10 @@ import type {
   ResourceBindMessage,
   ResourceIdentity,
   ServerMessage,
+  SyncItemBindMessage,
+  SyncItemDefinition,
+  SyncItemIntent,
+  SyncItemValues,
 } from '../shared/protocol.js';
 
 // tsconfig targets ES2022, which does not include Promise.withResolvers (ES2024).
@@ -196,6 +200,40 @@ export class SessionClient {
       resourceIdentity,
     };
     socket.send(JSON.stringify(message));
+  }
+
+  /** Host binds the scalar items exposed by the current resource. */
+  sendSyncItemBind(definitions: SyncItemDefinition[], values: SyncItemValues): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Session client is not connected');
+    const message: SyncItemBindMessage = {
+      type: 'sync-item-bind',
+      participantId: this.options.participantId,
+      definitions,
+      values,
+    };
+    socket.send(JSON.stringify(message));
+  }
+
+  submitSyncItemIntent(
+    key: string,
+    value: number,
+    commandId = `${this.options.participantId}-sync-${++this.nextCommandNumber}`,
+  ): string {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Session client is not connected');
+    const message: SyncItemIntent = {
+      type: 'sync-item-intent',
+      commandId,
+      sessionId: this.options.sessionId,
+      participantId: this.options.participantId,
+      clientObservedRevision: this.latestState?.stateRevision ?? 0,
+      key,
+      value,
+      createdAtMs: Date.now(),
+    };
+    socket.send(JSON.stringify(message));
+    return commandId;
   }
 
   get state(): PlaybackState | undefined {

@@ -33,6 +33,7 @@ export type ConsistencyIssueKind =
   | 'position-drift'
   | 'rate-mismatch'
   | 'duration-mismatch'
+  | 'sync-item-mismatch'
   | 'apply-failure';
 
 export type ConsistencyIssue = {
@@ -74,6 +75,7 @@ export const READINESS_BLOCKING_KINDS: ReadonlySet<ConsistencyIssueKind> = new S
   'position-drift',
   'rate-mismatch',
   'duration-mismatch',
+  'sync-item-mismatch',
   'apply-failure',
 ]);
 
@@ -234,6 +236,21 @@ export function evaluateActualState(authoritative: PlaybackState, report: Actual
       kind: 'duration-mismatch',
       detail: `Reported duration ${report.durationSeconds} does not match the authoritative duration ${authoritative.durationSeconds}`,
     });
+  }
+
+  const definitions = authoritative.syncItemDefinitions ?? [];
+  if (definitions.length > 0) {
+    for (const definition of definitions) {
+      const reportedValue = report.syncItems?.[definition.key];
+      const expectedValue = authoritative.syncItems?.[definition.key];
+      if (reportedValue === undefined || expectedValue === undefined
+        || Math.abs(reportedValue - expectedValue) > definition.tolerance) {
+        issues.push({
+          kind: 'sync-item-mismatch',
+          detail: `Reported sync item ${definition.key}=${String(reportedValue)} does not match the authoritative value ${String(expectedValue)} within tolerance ${definition.tolerance}`,
+        });
+      }
+    }
   }
 
   if (report.applyResult !== 'applied') {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, WebSocket, type RawData } from 'ws';
 import { applyIntent, createInitialPlaybackState, projectPlaybackPosition, StateTransitionError } from '../core/playback-state.js';
+import { applySyncItemBinding, applySyncItemIntent, syncItemDefinitionsEqual, syncItemValuesEqual, SyncItemTransitionError } from '../core/sync-items.js';
 import { evaluateActualState, type ConsistencyResult } from '../core/consistency-monitor.js';
 import {
   isActualStateReport,
@@ -10,6 +11,8 @@ import {
   isResourceBindMessage,
   isResourceIdentityEqual,
   isSnapshotRequest,
+  isSyncItemBindMessage,
+  isSyncItemIntent,
   type ActualStateReport,
   type ClientJoin,
   type ClientMessage,
@@ -22,6 +25,8 @@ import {
   type ServerMessage,
   type SessionParticipantStatus,
   type SessionStatusMessage,
+  type SyncItemBindMessage,
+  type SyncItemIntent,
 } from '../shared/protocol.js';
 
 // tsconfig targets ES2022, which does not include Promise.withResolvers (ES2024).
@@ -165,10 +170,13 @@ export class SessionAuthority {
   }
 
   getState(): PlaybackState {
-    const resourceIdentity = this.state.resourceIdentity;
     return {
       ...this.state,
-      resourceIdentity: resourceIdentity === null ? null : { ...resourceIdentity },
+      resourceIdentity: this.state.resourceIdentity === null ? null : { ...this.state.resourceIdentity },
+      ...(this.state.syncItemDefinitions === undefined ? {} : {
+        syncItemDefinitions: this.state.syncItemDefinitions.map((definition) => ({ ...definition })),
+      }),
+      ...(this.state.syncItems === undefined ? {} : { syncItems: { ...this.state.syncItems } }),
     };
   }
 
@@ -272,6 +280,20 @@ export class SessionAuthority {
             return;
           }
           this.handleActualState(socket, message);
+          return;
+        case 'sync-item-bind':
+          if (!isSyncItemBindMessage(message)) {
+            this.send(socket, { type: 'error', code: 'invalid-message', message: 'Malformed sync-item-bind message' });
+            return;
+          }
+          this.handleSyncItemBind(socket, message);
+          return;
+        case 'sync-item-intent':
+          if (!isSyncItemIntent(message)) {
+            this.send(socket, { type: 'error', code: 'invalid-message', message: 'Malformed sync-item-intent message' });
+            return;
+          }
+          this.handleSyncItemIntent(socket, message);
           return;
         default:
           this.send(socket, { type: 'error', code: 'unknown-message', message: 'Unsupported client message' });
@@ -462,9 +484,9 @@ export class SessionAuthority {
       return;
     }
     const nowMs = Date.now();
-    const { errorCode: _previousErrorCode, ...stateWithoutError } = this.state;
+    const { errorCode: _previousErrorCode, syncItemDefinitions: _previousDefinitions, syncItems: _previousItems, ...stateWithoutResourceState } = this.state;
     this.state = {
-      ...stateWithoutError,
+      ...stateWithoutResourceState,
       resourceIdentity: { ...message.resourceIdentity },
       stateRevision: this.state.stateRevision + 1,
       lastSequence: this.state.lastSequence + 1,
@@ -480,6 +502,69 @@ export class SessionAuthority {
     this.reports.clear();
     this.broadcast({ type: 'state', state: this.getState() });
     this.broadcastSessionStatus();
+  }
+
+  private handleSyncItemBind(socket: WebSocket, message: SyncItemBindMessage): void {
+    const participant = this.participants.get(socket);
+    if (!participant || participant.id !== message.participantId) {
+      this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
+      return;
+    }
+    if (participant.role !== 'host') {
+      this.send(socket, { type: 'error', code: 'not-host', message: 'Only the host may bind sync items' });
+      return;
+    }
+    const currentDefinitions = this.state.syncItemDefinitions;
+    if (currentDefinitions !== undefined) {
+      if (!syncItemDefinitionsEqual(currentDefinitions, message.definitions)) {
+        this.send(socket, { type: 'error', code: 'sync-item-mismatch', message: 'Sync item definitions are already bound' });
+        return;
+      }
+      if (!syncItemValuesEqual(this.state.syncItems, message.values)) {
+        this.send(socket, { type: 'state', state: this.getState() });
+      }
+      return;
+    }
+    try {
+      this.state = applySyncItemBinding(this.state, message.definitions, message.values);
+      this.broadcast({ type: 'state', state: this.getState() });
+      this.broadcastSessionStatus();
+    } catch (error) {
+      if (error instanceof SyncItemTransitionError) {
+        this.send(socket, { type: 'error', code: error.code, message: error.message });
+        return;
+      }
+      this.send(socket, { type: 'error', code: 'sync-item-failed', message: 'Unable to bind sync items' });
+    }
+  }
+
+  private handleSyncItemIntent(socket: WebSocket, intent: SyncItemIntent): void {
+    const participant = this.participants.get(socket);
+    if (!participant || participant.id !== intent.participantId || intent.sessionId !== this.sessionId) {
+      this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
+      return;
+    }
+    if (this.processedCommands.has(intent.commandId)) {
+      this.send(socket, { type: 'state', state: this.getState() });
+      return;
+    }
+    try {
+      const nextState = applySyncItemIntent(this.state, intent);
+      this.processedCommands.add(intent.commandId);
+      if (nextState === this.state) {
+        this.send(socket, { type: 'state', state: this.getState() });
+        return;
+      }
+      this.state = nextState;
+      this.broadcast({ type: 'state', state: this.getState() });
+      this.broadcastSessionStatus();
+    } catch (error) {
+      if (error instanceof SyncItemTransitionError) {
+        this.send(socket, { type: 'error', code: error.code, message: error.message });
+        return;
+      }
+      this.send(socket, { type: 'error', code: 'sync-item-failed', message: 'Unable to apply sync item intent' });
+    }
   }
 
   private handleIntent(socket: WebSocket, intent: PlaybackIntent): void {
@@ -608,11 +693,13 @@ export class SessionAuthority {
         mediaPhase: this.state.mediaPhase,
         positionSeconds: projectPlaybackPosition(this.state, report.positionObservedAtMs),
         playbackRate: this.state.playbackRate,
+        ...(this.state.syncItems === undefined ? {} : { syncItems: this.state.syncItems }),
       },
       actual: {
         mediaPhase: report.mediaPhase,
         positionSeconds: report.positionSeconds,
         playbackRate: report.playbackRate,
+        ...(report.syncItems === undefined ? {} : { syncItems: report.syncItems }),
       },
     };
   }

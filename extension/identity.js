@@ -91,6 +91,9 @@
       domain,
       urlRule: registration.urlRule,
       matchUrl: typeof registration.matchUrl === 'function' ? registration.matchUrl : undefined,
+      syncItemDefinitions: Array.isArray(registration.syncItemDefinitions)
+        ? registration.syncItemDefinitions.map((definition) => ({ ...definition }))
+        : [],
       capabilities: Array.isArray(registration.capabilities) ? registration.capabilities.slice() : [],
       deriveIdentity: typeof registration.deriveIdentity === 'function' ? registration.deriveIdentity : undefined,
     };
@@ -221,6 +224,35 @@
       }
     },
   });
+
+  // arXiv PDF pages expose shared scalar semantics. Browser built-in PDF
+  // viewers may block content-script injection; the registration still keeps
+  // identity and item semantics explicit for a compatible PDF.js surface.
+  register({
+    adapterId: 'arxiv-pdf',
+    name: 'arXiv PDF',
+    domain: 'arxiv.org',
+    urlRule: {
+      source: '^https?://(?:www\\.)?arxiv\\.org/pdf/[^/?#]+(?:[?#].*)?$',
+      flags: '',
+    },
+    capabilities: ['sync-items', 'native-events'],
+    syncItemDefinitions: [
+      { key: 'pdf.scroll', semantic: 'scalar', convergence: 'shared', min: 0, max: 1, tolerance: 0.002 },
+      { key: 'pdf.zoom', semantic: 'scalar', convergence: 'shared', min: 0.25, max: 4, tolerance: 0.01 },
+    ],
+    deriveIdentity(url) {
+      const match = url.pathname.match(/^\/pdf\/([^/]+)$/);
+      if (!match) return undefined;
+      const resourceId = (match[1] ?? '').replace(/\.pdf$/i, '');
+      if (!resourceId) return undefined;
+      return {
+        canonicalUrl: `https://arxiv.org/pdf/${resourceId}`,
+        resourceId,
+      };
+    },
+  });
+
 
   // --- Built-in syncers --------------------------------------------------------
 

@@ -31,6 +31,8 @@ const TIMEUPDATE_REPORT_INTERVAL_MS = 1000;
 const TIMEUPDATE_REPORT_DRIFT = 0.5;
 const REFRESH_INTERVAL_MS = 1500;
 const PENDING_INTENT_WINDOW_MS = 700;
+const PDF_REPORT_INTERVAL_MS = 1000;
+const PDF_INTENT_DEBOUNCE_MS = 150;
 
 // Media events that merely echo the user's own native transition. While the
 // bounded pending-intent window is active, actual-state reports triggered by
@@ -62,6 +64,12 @@ const PAGE = {
   // transition echoes are held back until the authority applies (apply-result
   // clears the window) or the window expires, so they cannot race the intent.
   pendingIntentUntil: 0,
+  syncDefinitions: [],
+  lastSyncSent: null,
+  lastSyncReportedAt: 0,
+  pdfIntentTimer: null,
+  pdfListenersAttached: false,
+  syncSurfaceAvailable: false,
 };
 
 // --- identity -------------------------------------------------------------------
@@ -111,8 +119,69 @@ function phaseFor(target) {
   if (target.readyState < HAVE_FUTURE_DATA) return 'loading';
   return 'playing';
 }
+function isPdfPage() {
+  return PAGE.identity?.adapterId === 'arxiv-pdf';
+}
+
+function findPdfSurface() {
+  return document.querySelector('#viewerContainer, #pdf-viewer, .pdfViewer');
+}
+
+function readPdfSyncItems() {
+  const surface = findPdfSurface();
+  if (!surface) return null;
+  const scrollElement = document.scrollingElement ?? document.documentElement;
+  const maxScroll = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
+  const scroll = maxScroll === 0 ? 0 : Math.min(1, Math.max(0, scrollElement.scrollTop / maxScroll));
+  const zoomControl = document.querySelector('#scaleSelect, #zoomSelect, [data-pdf-zoom]');
+  const rawZoom = zoomControl?.value
+    ?? zoomControl?.getAttribute('data-pdf-zoom')
+    ?? surface.dataset.anytogetherPdfZoom
+    ?? '1';
+  const parsedZoom = Number(rawZoom);
+  const zoom = Number.isFinite(parsedZoom) ? Math.min(4, Math.max(0.25, parsedZoom)) : 1;
+  return { 'pdf.scroll': scroll, 'pdf.zoom': zoom };
+}
+
+function applyPdfSyncItems(values) {
+  const surface = findPdfSurface();
+  if (!surface || !values || typeof values !== 'object') {
+    return { result: 'unsupported', error: '当前页面没有可控制的 PDF.js 阅读器', snapshot: readSnapshot() };
+  }
+  const scrollElement = document.scrollingElement ?? document.documentElement;
+  const scroll = Number(values['pdf.scroll']);
+  if (Number.isFinite(scroll)) {
+    const maxScroll = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
+    scrollElement.scrollTop = Math.min(1, Math.max(0, scroll)) * maxScroll;
+  }
+  const zoom = Number(values['pdf.zoom']);
+  if (Number.isFinite(zoom)) {
+    const clampedZoom = Math.min(4, Math.max(0.25, zoom));
+    const zoomControl = document.querySelector('#scaleSelect, #zoomSelect, [data-pdf-zoom]');
+    if (zoomControl && 'value' in zoomControl) {
+      zoomControl.value = String(clampedZoom);
+      zoomControl.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      surface.style.zoom = String(clampedZoom);
+      surface.dataset.anytogetherPdfZoom = String(clampedZoom);
+    }
+  }
+  return { result: 'applied', snapshot: readSnapshot() };
+}
 
 function readSnapshot(target) {
+  if (isPdfPage()) {
+    const syncItems = readPdfSyncItems();
+    return {
+      identity: PAGE.identity ?? AnyTogetherIdentity.deriveIdentity(location.href),
+      mediaPhase: 'paused',
+      positionSeconds: 0,
+      positionObservedAtMs: Date.now(),
+      playbackRate: 1,
+      durationSeconds: null,
+      ...(syncItems === null ? {} : { syncItems }),
+    };
+  }
   const video = target ?? PAGE.target;
   return {
     identity: PAGE.identity ?? AnyTogetherIdentity.deriveIdentity(location.href),
@@ -122,6 +191,13 @@ function readSnapshot(target) {
     playbackRate: video ? video.playbackRate : 1,
     durationSeconds: video && Number.isFinite(video.duration) ? video.duration : null,
   };
+}
+
+function ensurePdfListeners() {
+  if (!isPdfPage() || PAGE.pdfListenersAttached) return;
+  PAGE.pdfListenersAttached = true;
+  document.addEventListener('scroll', onPdfInteraction, true);
+  window.addEventListener('resize', onPdfInteraction);
 }
 
 // --- applying authoritative state ------------------------------------------------
@@ -176,7 +252,16 @@ function waitForSeekSettled(target) {
   });
 }
 
+async function applyPdfAuthoritativeState(state) {
+  if (!findPdfSurface()) {
+    return { result: 'unsupported', error: '当前页面没有可控制的 PDF.js 阅读器', snapshot: readSnapshot() };
+  }
+  if (state.syncItems === undefined) return { result: 'applied', snapshot: readSnapshot() };
+  return applyPdfSyncItems(state.syncItems);
+}
+
 async function applyAuthoritativeState(state) {
+  if (isPdfPage()) return applyPdfAuthoritativeState(state);
   const target = await findTargetWithRetry();
   if (!target) {
     return { result: 'unsupported', error: '页面没有可控制的视频', snapshot: readSnapshot() };
@@ -281,6 +366,29 @@ function onMediaEvent(event) {
   sendToBackground({ type: 'actual-state', snapshot: readSnapshot(target) });
 }
 
+function onPdfInteraction() {
+  if (!isPdfPage() || !PAGE.initialApplied || PAGE.applying || Date.now() < PAGE.settleUntil) return;
+  const syncItems = readPdfSyncItems();
+  if (syncItems === null) return;
+  const previous = PAGE.lastSyncSent;
+  const changed = previous === null || Object.keys(syncItems).some((key) => (
+    Math.abs(syncItems[key] - previous[key]) > 0.0001
+  ));
+  if (!changed) return;
+  PAGE.pendingIntentUntil = Date.now() + PENDING_INTENT_WINDOW_MS;
+  clearTimeout(PAGE.pdfIntentTimer);
+  PAGE.pdfIntentTimer = setTimeout(() => {
+    PAGE.pdfIntentTimer = null;
+    sendToBackground({ type: 'user-sync-items', values: syncItems });
+    PAGE.lastSyncSent = { ...syncItems };
+    setTimeout(() => {
+      if (PAGE.initialApplied && Date.now() >= PAGE.pendingIntentUntil) {
+        sendToBackground({ type: 'actual-state', snapshot: readSnapshot() });
+      }
+    }, PENDING_INTENT_WINDOW_MS);
+  }, PDF_INTENT_DEBOUNCE_MS);
+}
+
 function ensureListeners(target) {
   if (target.__anyTogetherListening) return;
   target.__anyTogetherListening = true;
@@ -361,6 +469,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // part of the authoritative state, so transition echoes may report
       // again at full fidelity.
       PAGE.pendingIntentUntil = 0;
+      if (isPdfPage() && state.syncItemDefinitions === undefined && PAGE.identity !== null) {
+        sendContentReady(PAGE.identity, true);
+      }
+      if (payload.snapshot?.syncItems) PAGE.lastSyncSent = { ...payload.snapshot.syncItems };
     }
     if (payload.result === 'applied') PAGE.lastAppliedRevision = state.stateRevision;
     sendResponse({ type: 'apply-result', ...payload });
@@ -389,32 +501,28 @@ function refresh() {
   if (identityChanged) {
     PAGE.lastHref = href;
     PAGE.identity = identity;
+    const descriptor = identity ? AnyTogetherIdentity.resolveAdapter(href) : null;
+    PAGE.syncDefinitions = descriptor?.syncItemDefinitions ?? [];
     PAGE.registered = false;
     PAGE.initialApplied = false;
     PAGE.target = null;
     PAGE.buffering = false;
     PAGE.settleUntil = 0;
     PAGE.pendingIntentUntil = 0;
+    PAGE.lastSyncSent = null;
+    PAGE.syncSurfaceAvailable = false;
     PAGE.lastAppliedRevision = -1;
   }
 
   if (identity) {
-    const target = selectTarget();
+    ensurePdfListeners();
+    const pdfSurfaceAvailable = isPdfPage() && findPdfSurface() !== null;
+    const target = isPdfPage() ? null : selectTarget();
     if (PAGE.target === null && target) {
-      // First video on this page/identity: attach and register the target.
       PAGE.target = target;
       ensureListeners(target);
-      // Delayed target registration: the video may only appear after the page
-      // is interactive; tell the background the target is now available so it
-      // can re-push the authoritative state.
-      if (PAGE.registered) {
-        sendToBackground({ type: 'content-ready', identity, hasVideo: true });
-      }
+      if (PAGE.registered) sendContentReady(identity, true);
     } else if (PAGE.target !== null && (target !== PAGE.target || !document.contains(PAGE.target))) {
-      // SPA video-element swap: the current target was replaced or detached.
-      // Reset the apply pipeline and re-register so the background re-pushes
-      // the authoritative state onto the new element; the stale target keeps
-      // its listeners but onMediaEvent ignores it.
       PAGE.target = target ?? null;
       if (PAGE.target) ensureListeners(PAGE.target);
       PAGE.registered = false;
@@ -424,12 +532,27 @@ function refresh() {
       PAGE.pendingIntentUntil = 0;
       PAGE.lastAppliedRevision = -1;
     }
+    if (PAGE.registered && pdfSurfaceAvailable !== PAGE.syncSurfaceAvailable) {
+      sendContentReady(identity, pdfSurfaceAvailable);
+    }
+    PAGE.syncSurfaceAvailable = pdfSurfaceAvailable;
   }
 
   if (identity && !PAGE.registered) {
     PAGE.registered = true;
-    sendToBackground({ type: 'content-ready', identity, hasVideo: PAGE.target !== null });
+    sendContentReady(identity, isPdfPage() ? PAGE.syncSurfaceAvailable : PAGE.target !== null);
   }
+}
+
+function sendContentReady(identity, hasSurface) {
+  const syncItems = isPdfPage() ? readPdfSyncItems() : null;
+  sendToBackground({
+    type: 'content-ready',
+    identity,
+    hasVideo: hasSurface,
+    syncItemDefinitions: PAGE.syncDefinitions,
+    ...(syncItems === null ? {} : { syncItems }),
+  });
 }
 
 setInterval(refresh, REFRESH_INTERVAL_MS);

@@ -193,9 +193,51 @@ type SessionStatusMessage = {
 
 **未来能力（不在当前线上）**：
 - 会话状态持久化/恢复（核心已有 `restorePlaybackState`，服务端不落盘）；
-- 多资源会话与非媒体标量（滚动/PDF 等）——需要新的身份/状态/一致性扩展，当前协议是
-  “单资源、媒体相位”设计，不得绕过守卫伪造；
+- 多资源会话（multi-resource，独立立项评审）；
 - 快照协商（`snapshot-request`）之外的增量/协商同步机制；
+
+## 10. 标量同步项（sync-items，`[当前实现]`）
+
+Phase 3 首次把权威状态从"单一媒体 playhead"推广为"媒体 playhead + 共享标量项"：
+`PlaybackState` 新增两个可选字段 `syncItemDefinitions?: SyncItemDefinition[]` 与
+`syncItems?: SyncItemValues`。字段缺省 = 旧会话行为，全部旧客户端/测试零改动兼容。
+
+### 10.1 定义与取值
+
+```ts
+type SyncItemDefinition = {
+  key: string;              // /^[a-z][a-z0-9._-]{0,63}$/，全局唯一
+  semantic: 'scalar';       // rate 恒为 0 的游标
+  convergence: 'shared';    // 会话内收敛到同一值
+  min: number; max: number; // 值域闭区间
+  tolerance: number;        // 一致性判定容差（绝对值）
+};
+```
+
+内置 arXiv PDF 注册项声明两项：`pdf.scroll`（归一化 0–1，容差 0.002）、`pdf.zoom`
+（0.25–4，容差 0.01），见 `extension/identity.js`。
+
+### 10.2 线上消息
+
+| `type` | 方向 | 语义 |
+|---|---|---|
+| `sync-item-bind` | client → server | host 绑定当前资源的标量 schema + 初值；幂等：同 schema 同值 no-op，同 schema 异值回放当前状态，异 schema → `sync-item-mismatch`；仅 host 可绑定 |
+| `sync-item-intent` | client → server | 任一参与者提交单项标量值；commandId 幂等、同值 no-op 不 bump revision；越界 → `invalid-sync-value`，未知 key → `unknown-sync-item` |
+
+两者都复用现有 `stateRevision`/`lastSequence` 单调递增与 `state` 广播通道；
+`actual-state` 报告新增可选 `syncItems` 字段，一致性评估对每个已定义项做容差比较，
+失配产出新的阻断性 issue `sync-item-mismatch`。
+
+### 10.3 状态机不变量
+
+- 绑定/意图成功各 bump revision+sequence 各 +1，与媒体意图共享同一单调序列；
+- `resource-bind` 切换资源时清空 `syncItemDefinitions`/`syncItems`（新资源重新绑定）；
+- 标量状态不参与媒体相位/位置/速率的投影——scalar 即 rate=0 游标，无时间外推。
+
+### 10.4 扩展路径
+
+新增标量资源（未来电子书/PPT）只需：(1) identity.js/Node registry 注册项带
+`syncItemDefinitions`；(2) 页面侧读写标量值；(3) 复用本节消息。核心零改动。
 
 **提交纪律**（`[建议约定]`）：新增同步器不得修改 `src/shared/protocol.ts` 现有类型与守卫；
 不得修改 `docs/old_designs/`；不得把本节约定的未来能力写成已实现（见 overview.md §5）。
