@@ -55,6 +55,7 @@ const SESSION = {
   bindInFlight: null, // resource identity of a resource-bind sent but not yet adopted
   pendingLocalPermission: null, // { origin, pattern, canonicalUrl } awaiting popup user gesture
   injectedLocalTabs: new Set(), // local-video tabs injected after navigation
+  commandedNavigations: new Map(), // tabId -> { url, atMs } navigations we issued via routeCanonical
   identity: null, // session ResourceIdentity; adopted from join-accepted or a
   // newer authoritative state after a participant resource-bind
   // Client-only one-time auto recovery: once the authority reports the session
@@ -402,6 +403,7 @@ async function connect(options) {
     SESSION.hostTabId = null;
     SESSION.pendingLocalPermission = null;
     SESSION.injectedLocalTabs.clear();
+    SESSION.commandedNavigations.clear();
     SESSION.bindInFlight = null;
     SESSION.clientAutoRecoveredFingerprint = null;
     SESSION.clientRecoverInFlight = null;
@@ -430,6 +432,7 @@ function disconnect() {
   SESSION.hostTabId = null;
   SESSION.bindInFlight = null;
   SESSION.clientAutoRecoveredFingerprint = null;
+  SESSION.commandedNavigations.clear();
   SESSION.pendingLocalPermission = null;
   SESSION.injectedLocalTabs.clear();
   SESSION.clientRecoverInFlight = null;
@@ -596,7 +599,51 @@ function clearApplyTarget() {
   SESSION.lastAppliedRevision = -1;
 }
 
-async function routeCanonical(canonicalUrl) {
+/**
+ * Navigation commands issued by routeCanonical. A content-ready arriving from
+ * such a tab within COMMANDED_NAV_WINDOW_MS is a transition echo (the old page
+ * or a site redirect), never a user switch — the session is already going to
+ * the commanded URL.
+ */
+const COMMANDED_NAV_WINDOW_MS = 3000;
+
+function markCommandedNavigation(tabId, url) {
+  SESSION.commandedNavigations.set(tabId, { url, atMs: Date.now() });
+}
+
+/**
+ * Persistent-intent proof for a resource switch: a bind silently swallowed by
+ * the authority's transition lock (or lost in flight) is re-sent every ~1.1s
+ * as long as the requesting tab still sits on that identity. If the user moves
+ * the tab elsewhere, or the session lands on the identity, the retry stops —
+ * so echoes cannot resurrect and genuine intent is never lost.
+ */
+function scheduleBindRetry(tabId, identity, attemptsLeft) {
+  if (attemptsLeft <= 0 || SESSION.status !== 'connected') return;
+  setTimeout(() => {
+    if (SESSION.status !== 'connected') return;
+    // Landed: the session followed this identity.
+    if (SESSION.identity && IDENTITY.identityEqual(identity, SESSION.identity)) return;
+    // A different bind is in flight: it owns the outcome now.
+    if (SESSION.bindInFlight !== null && !IDENTITY.identityEqual(identity, SESSION.bindInFlight)) return;
+    void (async () => {
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        const current = tab?.url ? IDENTITY.deriveIdentity(tab.url) : null;
+        if (!current || !IDENTITY.identityEqual(current, identity)) return; // user moved on
+        if (tabId === applyTargetTabId() || tab.active === true) {
+          adoptApplyTarget(tabId);
+          sendResourceBind(identity);
+          scheduleBindRetry(tabId, identity, attemptsLeft - 1);
+        }
+      } catch {
+        // Tab gone: nothing to prove anymore.
+      }
+    })();
+  }, 1100);
+}
+
+ async function routeCanonical(canonicalUrl) {
   if (!(await ensureLocalOriginPermission(canonicalUrl))) return;
   if (!IDENTITY.isSupportedUrl(canonicalUrl)) return; // never open unsupported destinations
 
@@ -622,6 +669,7 @@ async function routeCanonical(canonicalUrl) {
       // old page is destroyed by the navigation, so no stale video keeps
       // playing (no overlapping audio) and no extra tab appears.
       await chrome.tabs.update(ownTabId, { url: canonicalUrl, active: true });
+      markCommandedNavigation(ownTabId, canonicalUrl);
       adoptApplyTarget(ownTabId);
       return;
     } catch {
@@ -660,6 +708,7 @@ async function routeCanonical(canonicalUrl) {
       const update = { active: true };
       if (!onResource(match)) update.url = canonicalUrl;
       await chrome.tabs.update(match.id, update);
+      if (update.url) markCommandedNavigation(match.id, update.url);
       if (match.windowId !== undefined) await chrome.windows.update(match.windowId, { focused: true });
     } catch {
       // Guidance is best-effort; applying state still works on a background tab.
@@ -677,6 +726,7 @@ async function routeCanonical(canonicalUrl) {
   }
   try {
     const created = await chrome.tabs.create({ url: canonicalUrl });
+    markCommandedNavigation(created.id, canonicalUrl);
     adoptApplyTarget(created.id);
     SESSION.lastCreateAt = Date.now();
   } catch (error) {
@@ -1032,6 +1082,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   SESSION.injectedLocalTabs.delete(tabId);
+  SESSION.commandedNavigations.delete(tabId);
   // The apply-target tab is gone: drop it so a fresh page's content-ready
   // re-registers and re-applies; while the page is gone, re-route the latest
   // state so the session page comes back. The socket, session, latest state,
@@ -1057,6 +1108,9 @@ chrome.tabs.onActivated.addListener((info) => {
       adoptApplyTarget(info.tabId);
       if (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity)) {
         sendResourceBind(identity);
+        // Tab activation is a deliberate user action: prove the intent
+        // persistently in case the authority is mid-transition.
+        scheduleBindRetry(info.tabId, identity, 6);
       } else {
         // Same resource in a fresh tab/window: take it over and re-apply.
         enqueueApply();
@@ -1179,8 +1233,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // superseded or background page never steals the role.
       if (identity && (SESSION.identity === null || !IDENTITY.identityEqual(identity, SESSION.identity))) {
         if (isOwnTab || isActivePage) {
+          // Transition-echo filter: if we recently COMMANDED this tab to
+          // navigate (routeCanonical), a different identity reported by it is
+          // the old page or a redirect — not a user switch. Re-align instead
+          // of re-binding, and let the persistent-intent retry prove whether
+          // a genuine user switch hides behind the echo.
+          const commanded = SESSION.commandedNavigations.get(tabId);
+          if (commanded && Date.now() - commanded.atMs < COMMANDED_NAV_WINDOW_MS) {
+            enqueueApply();
+            scheduleBindRetry(tabId, identity, 4);
+            return undefined;
+          }
           adoptApplyTarget(tabId);
           sendResourceBind(identity);
+          scheduleBindRetry(tabId, identity, 6);
         }
         return undefined;
       }

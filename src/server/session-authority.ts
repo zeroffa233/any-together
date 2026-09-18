@@ -91,6 +91,13 @@ const CORRECTABLE_ISSUES: Record<string, true> = {
 /** Minimum gap between forced resyncs, so a seeking endpoint can settle. */
 const RESYNC_COOLDOWN_MS = 2000;
 
+/**
+ * How long a resource switch may stay unconfirmed. Every actual-state report
+ * carries the reporter's identity, so a healthy switch confirms within one
+ * reporting period; the timeout only covers pages that never load.
+ */
+const TRANSITION_TIMEOUT_MS = 5000;
+
 type PendingJoin = {
   socket: WebSocket;
   participantId: string;
@@ -110,6 +117,8 @@ export class SessionAuthority {
   private pendingJoin: PendingJoin | undefined;
   private lastResyncAtMs = 0;
   private lastStatusKey: string | undefined;
+  /** In-flight resource switch: null when stable, target+since while navigating. */
+  private transition: { target: ResourceIdentity; sinceMs: number } | null = null;
   private server: WebSocketServer | undefined;
   private state: PlaybackState;
 
@@ -494,11 +503,24 @@ export class SessionAuthority {
       this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
       return;
     }
+    this.expireTransition();
     // Idempotent no-op: an identical bind cannot change anything, so it must
     // not bump the revision nor reset the playhead. An unbound session has no
     // identity to compare and still adopts the bind below.
     const sessionIdentity = this.state.resourceIdentity;
     if (sessionIdentity !== null && isResourceIdentityEqual(message.resourceIdentity, sessionIdentity)) {
+      return;
+    }
+    // Transition lock: while a resource switch is in flight (until every
+    // participant reports the NEW identity, or the timeout expires) further
+    // DIFFERENT identities are ignored. Reports from a page still sitting on
+    // the old resource are navigation echoes, not user intent — accepting them
+    // is what produced the X/Y oscillation. The echo never re-binds: the
+    // extension filters its own commanded navigations, and a genuine switch
+    // made during the transition re-binds with a persistent-intent retry that
+    // survives past the timeout below.
+    if (this.transition !== null) {
+      this.send(socket, { type: 'state', state: this.getState() });
       return;
     }
     const nowMs = Date.now();
@@ -517,9 +539,38 @@ export class SessionAuthority {
       lastCommandId: null,
       updatedAtMs: nowMs,
     };
+    this.transition = { target: { ...message.resourceIdentity }, sinceMs: nowMs };
     this.reports.clear();
     this.broadcast({ type: 'state', state: this.getState() });
     this.broadcastSessionStatus();
+  }
+
+  /**
+   * A resource switch is CONFIRMED only when every joined participant has
+   * reported an actual state carrying the target identity — the periodic
+   * actual-state stream is the completion signal, so no extra message exists.
+   * A timeout force-unlocks so a page that never loads cannot deadlock the
+   * session; the target stays bound either way.
+   */
+  private checkTransitionUnlock(): void {
+    const transition = this.transition;
+    if (transition === null) return;
+    if (Date.now() - transition.sinceMs > TRANSITION_TIMEOUT_MS) {
+      this.transition = null;
+      return;
+    }
+    for (const socket of this.participants.keys()) {
+      const entry = this.reports.get(socket);
+      if (entry === undefined) return;
+      if (!isResourceIdentityEqual(entry.report.resourceIdentity, transition.target)) return;
+    }
+    this.transition = null;
+  }
+
+  private expireTransition(): void {
+    if (this.transition !== null && Date.now() - this.transition.sinceMs > TRANSITION_TIMEOUT_MS) {
+      this.transition = null;
+    }
   }
 
   private handleSyncItemBind(socket: WebSocket, message: SyncItemBindMessage): void {
@@ -693,6 +744,7 @@ export class SessionAuthority {
     // Store the report even when inconsistent: staleness is judged against the
     // CURRENT revision at session-status time, and the diagnostic stays useful.
     this.reports.set(socket, { report, evaluation });
+    this.checkTransitionUnlock();
     if (!evaluation.consistent) {
       this.broadcast(this.buildDesyncDiagnostic(participant, report, evaluation));
     }
