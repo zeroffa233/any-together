@@ -77,13 +77,6 @@
       font-weight: 600;
     }
 
-    .brand-sub {
-      font-size: 12px;
-      font-weight: 400;
-      color: var(--color-text-muted);
-      margin-left: var(--space-2);
-    }
-
     .role-badge {
       margin-left: auto;
       font-size: 12px;
@@ -758,7 +751,7 @@
 </head>
 <body>
   <header class="header">
-    <h1 class="brand">AnyTogether <span class="brand-sub">播放同步</span></h1>
+    <h1 class="brand">AnyTogether</h1>
     <span id="role-badge" class="role-badge" hidden>实际角色 · —</span>
     <button id="more-button" class="icon-button" type="button" aria-label="更多设置"
       aria-expanded="false" aria-controls="secondary-panel" title="更多设置">⋯</button>
@@ -775,16 +768,16 @@
       </fieldset>
 
       <div class="field">
-        <label for="server" id="label-server">本机伴随进程地址</label>
+        <label for="server" id="label-server">服务器地址</label>
         <input type="text" id="server" value="127.0.0.1" readonly autocomplete="off" spellcheck="false">
-        <p class="field-hint" id="hint-server">仅连接本机；Session 由本机伴随进程提供</p>
+        <p class="field-hint" id="hint-server">固定连接本机伴随进程</p>
         <p class="field-error" id="err-server" role="alert" hidden></p>
       </div>
 
       <div class="field">
-        <label for="port">WebSocket 端口</label>
+        <label for="port">端口</label>
         <input type="number" id="port" value="8765" min="1" max="65535" inputmode="numeric">
-        <p class="field-hint">Session API 使用端口 +1，由后台查询</p>
+        <p class="field-hint" id="hint-port">默认 8765</p>
         <p class="field-error" id="err-port" role="alert" hidden></p>
       </div>
 
@@ -798,11 +791,6 @@
         </div>
         <p class="field-hint" id="hint-session"></p>
         <p class="field-error" id="err-session" role="alert" hidden></p>
-      </div>
-
-      <div class="field">
-        <label for="participant">参与者 ID（可选）</label>
-        <input type="text" id="participant" placeholder="留空自动生成" autocomplete="off" spellcheck="false">
       </div>
     </form>
 
@@ -855,29 +843,21 @@
 
     <section class="card" aria-labelledby="resource-title">
       <h2 id="resource-title" class="card-title">当前资源</h2>
-      <p id="resource-empty" class="placeholder">尚未绑定资源。主机请在支持的 Bilibili/YouTube 视频页打开或刷新；从机将等待主机共享资源。</p>
+      <p id="resource-empty" class="placeholder">尚未绑定资源。主机请在支持的视频页打开或刷新；从机将等待主机共享资源。</p>
       <div id="resource-body" hidden>
         <dl class="kv">
           <dt>站点</dt>
           <dd id="resource-adapter">—</dd>
-          <dt>链接</dt>
-          <dd id="resource-url" class="selectable">—</dd>
           <dt>状态</dt>
           <dd id="resource-phase">—</dd>
           <dt>位置</dt>
           <dd id="resource-position" class="tabular">—</dd>
-          <dt>时长</dt>
-          <dd id="resource-duration" class="tabular">—</dd>
-          <dt>倍速</dt>
-          <dd id="resource-rate" class="tabular">—</dd>
-          <dt>修订</dt>
-          <dd id="resource-revision" class="tabular">—</dd>
         </dl>
         <p id="resource-error" class="resource-error" hidden>
           <span id="resource-error-text">媒体状态错误，请返回视频页检查。</span>
           <button id="open-diagnostic" type="button" class="link-button">打开诊断</button>
         </p>
-        <p class="hint">播放、暂停、拖动和倍速请在视频页原生播放器操作；popup 不控制播放器。</p>
+        <p class="hint">请在视频页用原生播放器控制播放。</p>
       </div>
     </section>
 
@@ -895,18 +875,18 @@
       <div id="diagnostic-body" class="details-body">暂无诊断记录</div>
     </details>
     <details class="details" id="details-connection">
-      <summary>连接详情</summary>
-      <dl id="connection-details" class="kv details-body"></dl>
-    </details>
-    <details class="details" id="details-share">
-      <summary>分享串详情</summary>
+      <summary>会话详情</summary>
       <div class="details-body">
+        <dl id="connection-details" class="kv"></dl>
+        <div class="field">
+          <label for="participant">参与者 ID（可选）</label>
+          <input type="text" id="participant" placeholder="留空自动生成" autocomplete="off" spellcheck="false">
+        </div>
         <p id="share-text" class="share-text selectable">—</p>
-        <button id="copyshare" type="button" class="secondary" disabled>复制分享串</button>
-        <p class="field-hint">发送给从机即可加入。若复制失败，请手动选中上方文本复制。</p>
+        <p class="field-hint">主机分享串。发送给从机即可加入；从机也可直接点击“粘贴分享”。</p>
       </div>
     </details>
-    <p class="future-note">未来能力（尚未实现）：整段分享串一键解析、多人会话、多资源/非媒体同步、自动公网发现、账号与聊天。</p>
+    <p class="future-note">未来能力（尚未实现）：多人会话、多资源会话、自动公网发现、账号与聊天。</p>
   </section>
 
   <script src="popup.js"></script>

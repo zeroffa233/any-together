@@ -131,7 +131,7 @@ popup
 anytogether://session?host=<host>&port=<wsPort>&session=<sessionId>
 ```
 
-本轮 client 仍以 host、port、Session ID 三项加入；**解析整段 `anytogether://` 并自动填充字段属于未来能力**，除非实现了对应 parser，不得在 UI 宣称“粘贴分享串即可加入”。
+`[已实现]` client 支持两种加入方式：把分享串粘贴进 Session ID 输入框（自动解析填充 host/port/session），或点击“粘贴分享”按钮读取剪贴板解析。解析器为 `parseShareString`（popup.js），与 background 生成的分享串严格互逆。
 
 主机当前 tab 不是支持的视频页时，连接仍可建立但资源可能为 `null`；资源卡明确显示“尚未绑定资源，请在支持的视频页打开/刷新”，不得在 popup 添加 URL 输入框。
 
@@ -246,12 +246,14 @@ Header 的“更多设置”打开同一 popup 内的面板（窄宽度时全宽
 
 `session-status.reason` 显示为辅助诊断：`awaiting-second-participant`、`awaiting-actual-state`、`actual-state-desync`；不要把 machine code 丢失在泛化的“未知错误”中。
 
-### 7.2 连接详情与设置
+### 7.2 会话详情与设置（已实现，合并后的面板）
 
-二级面板可展开“连接详情”：实际 role、Session ID、host、WS port、API 地址（host 模式为 `http://127.0.0.1:<port+1>/api/session`）、participantId。Session ID 和分享串使用只读可选中文本。设置不提供新的网络发现、账号、聊天、媒体代理或 URL 输入。
+二级面板“会话详情”合并展示：实际 role、Session ID、host、端口、API 地址（host 模式为 `http://127.0.0.1:<port+1>/api/session`）、participantId、参与者 ID 高级输入（留空自动生成）、资源链接与权威修订（从资源卡移入的调试级信息）、主机分享串（只读可选文本；复制入口在主界面 Session 行，面板不重复放按钮）。
 
-- **当前实现**：连接/断开、Session 获取与复制、参与者审批、只读状态/phase/position/diagnostic。
-- **未来能力**：整段分享串一键解析、多于两名参与者、多资源会话、滚动/PDF 等非媒体同步、自动公网发现/NAT、账号和聊天。未有协议与实现前只可作为 disabled 的“未来”说明，不能出现在首要 CTA。
+首屏渐进披露：连接成功后（connected/waiting/ready/degraded）主配置卡自动隐藏，只读会话卡领先；断开、出错、重试时恢复显示。
+
+- **当前实现**：连接/断开、Session 获取与复制、分享串解析（粘贴或剪贴板）、参与者审批、只读状态/phase/position/diagnostic、本地视频运行时授权卡、资源卡精简（站点/状态·倍速/位置·时长）。
+- **未来能力**：多于两名参与者、多资源会话、自动公网发现/NAT、账号和聊天。未有协议与实现前只可作为说明，不能出现在首要 CTA。
 
 ## 8. 空、加载、错误与恢复文案
 

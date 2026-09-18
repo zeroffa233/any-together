@@ -277,6 +277,14 @@ function renderBanner() {
     }
   }
 
+  // Progressive disclosure: once connected (any healthy sub-state), the
+  // config card has no interactive value — hide it so the read-only session
+  // cards lead the popup. It returns on disconnect, error or retry.
+  $('connect-form').hidden = state === 'connected'
+    || state === 'waiting'
+    || state === 'ready'
+    || state === 'degraded';
+
   applyLock();
 }
 
@@ -286,6 +294,7 @@ function applyLock() {
   $('modeclient').disabled = locked;
   for (const id of ['server', 'port', 'session', 'participant']) $(id).disabled = locked;
   $('localsession').disabled = locked || fetchInFlight;
+  $('parseshare').disabled = locked;
   updateShareAvailability();
 }
 
@@ -299,13 +308,13 @@ function setMode(next, skipFetch = false) {
 
   const serverInput = $('server');
   serverInput.readOnly = host;
-  $('label-server').textContent = host ? '本机伴随进程地址' : '主机地址';
+  $('label-server').textContent = host ? '服务器地址' : '主机地址';
   $('hint-server').textContent = host
-    ? '仅连接本机；Session 由本机伴随进程提供'
+    ? '固定连接本机伴随进程'
     : '主机分享的地址（IP 或主机名）';
-  $('copysession').hidden = !host;
   $('localsession').hidden = !host;
-  $('parseshare').hidden = !host;
+  $('parseshare').hidden = host;
+  $('copysession').hidden = !host;
   const sessionInput = $('session');
   sessionInput.placeholder = host ? '本机 Session ID' : '主机分享的 Session ID';
   if (host) {
@@ -398,7 +407,6 @@ async function copySession() {
   const reply = await send({ type: 'copy-session', host, port, sessionId });
   if (!reply || reply.ok === false) return showError(reply?.error ?? '无法生成分享串');
   $('share-text').textContent = reply.share;
-  $('copyshare').disabled = false;
   const copied = await copyText(reply.share);
   if (copied) showNotice('已复制，可发送给从机');
   else showError('复制失败，请手动复制分享串');
@@ -611,7 +619,6 @@ function renderResourceCard() {
   empty.hidden = true;
   body.hidden = false;
   $('resource-adapter').textContent = ADAPTER_LABELS[identity.adapterId] ?? identity.adapterId;
-  $('resource-url').textContent = identity.canonicalUrl;
   updatePlaybackFields();
 }
 
@@ -676,19 +683,21 @@ async function denyLocalPermission() {
   showNotice('已暂不授权本地视频地址');
 }
 
-// --- join approval (spec §6.2) ------------------------------------------------
+// --- playback read-only fields ------------------------------------------------
 
 function updatePlaybackFields() {
   if (!currentState) return;
   const phase = currentState.mediaPhase;
-  $('resource-phase').textContent = PHASE_LABELS[phase] ?? phase ?? '未知';
-  $('resource-position').textContent = formatTime(projectedPosition(currentState));
-  $('resource-duration').textContent = currentState.durationSeconds == null
-    ? '时长未知'
-    : formatTime(currentState.durationSeconds);
   const rate = Number.isFinite(currentState.playbackRate) ? currentState.playbackRate : 1;
-  $('resource-rate').textContent = `${rate.toFixed(2)}×`;
-  $('resource-revision').textContent = `#${Number.isInteger(currentState.stateRevision) ? currentState.stateRevision : '?'}`;
+  const phaseText = PHASE_LABELS[phase] ?? phase ?? '未知';
+  // Rate is only worth showing when it differs from normal playback speed.
+  $('resource-phase').textContent = Math.abs(rate - 1) > 1e-9
+    ? `${phaseText} · ${rate.toFixed(2)}×`
+    : phaseText;
+  const position = formatTime(projectedPosition(currentState));
+  $('resource-position').textContent = currentState.durationSeconds == null
+    ? `${position} / 时长未知`
+    : `${position} / ${formatTime(currentState.durationSeconds)}`;
   $('resource-error').hidden = phase !== 'error';
 }
 
@@ -833,22 +842,28 @@ function renderConnectionDetails() {
   addKv(dl, '实际角色', actualRole ? (actualRole === 'host' ? '主机' : '从机') : '—');
   addKv(dl, 'Session ID', $('session').value.trim() || '—');
   addKv(dl, '主机地址', $('server').value.trim() || '—');
-  addKv(dl, 'WebSocket 端口', port);
+  addKv(dl, '端口', port);
   addKv(dl, 'API 地址', api ?? '—');
   addKv(dl, '参与者 ID', selfParticipantId ?? '—');
+  // Debug-grade details moved out of the resource card: the resource URL and
+  // the authoritative revision belong here, not in the at-a-glance card.
+  if (currentState?.resourceIdentity) {
+    addKv(dl, '资源链接', currentState.resourceIdentity.canonicalUrl);
+  }
+  if (currentState && Number.isInteger(currentState.stateRevision)) {
+    addKv(dl, '修订', `#${currentState.stateRevision}`);
+  }
 }
 
 function renderShareText(share) {
   if (share) {
     $('share-text').textContent = share;
-    $('copyshare').disabled = false;
   }
 }
 
 function updateShareAvailability() {
   const hasSession = !!$('session').value.trim();
   $('copysession').disabled = !hasSession;
-  $('copyshare').disabled = mode !== 'host' || !hasSession;
 }
 
 // --- secondary panel open/close ----------------------------------------------
@@ -1048,9 +1063,6 @@ $('parseshare').addEventListener('click', () => {
   void pasteShare();
 });
 
-$('copyshare').addEventListener('click', () => {
-  void copySession();
-});
 
 $('joinaccept').addEventListener('click', () => {
   void sendJoinDecision(true);
