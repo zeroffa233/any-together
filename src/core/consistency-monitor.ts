@@ -158,7 +158,11 @@ export function arePhasesConsistencyCompatible(left: MediaPhase, right: MediaPha
  * - Apply failure: any applyResult other than 'applied' is a desync, and an
  *   error phase is flagged explicitly even when applied.
  */
-export function evaluateActualState(authoritative: PlaybackState, report: ActualStateReport): ConsistencyResult {
+export function evaluateActualState(
+  authoritative: PlaybackState,
+  report: ActualStateReport,
+  observedAtMs: number = report.positionObservedAtMs,
+): ConsistencyResult {
   const issues: ConsistencyIssue[] = [];
 
   if (report.observedRevision < authoritative.stateRevision) {
@@ -208,7 +212,7 @@ export function evaluateActualState(authoritative: PlaybackState, report: Actual
   if (arePhasesReadinessEquivalent(report.mediaPhase, authoritative.mediaPhase)
     && !isTransientPhase(report.mediaPhase)
     && !isTransientPhase(authoritative.mediaPhase)) {
-    const expectedPosition = projectPlaybackPosition(authoritative, report.positionObservedAtMs);
+    const expectedPosition = projectPlaybackPosition(authoritative, observedAtMs);
     const driftMs = Math.round(Math.abs(expectedPosition - report.positionSeconds) * 1000);
     if (driftMs > POSITION_DRIFT_THRESHOLD_MS) {
       issues.push({

@@ -74,6 +74,23 @@ type ParticipantReport = {
   evaluation: ConsistencyResult;
 };
 
+/**
+ * Consistency issues a forced resync can actually fix: the authority
+ * re-broadcasts its state so the diverging endpoint re-applies it. Stale or
+ * mismatched revisions are handled by snapshot recovery, and an apply failure
+ * cannot be fixed by re-broadcasting the same state, so neither triggers one.
+ */
+const CORRECTABLE_ISSUES: Record<string, true> = {
+  'position-drift': true,
+  'phase-mismatch': true,
+  'rate-mismatch': true,
+  'duration-mismatch': true,
+  'sync-item-mismatch': true,
+};
+
+/** Minimum gap between forced resyncs, so a seeking endpoint can settle. */
+const RESYNC_COOLDOWN_MS = 2000;
+
 type PendingJoin = {
   socket: WebSocket;
   participantId: string;
@@ -91,6 +108,7 @@ export class SessionAuthority {
   private readonly reports = new Map<WebSocket, ParticipantReport>();
   private readonly processedCommands = new Set<string>();
   private pendingJoin: PendingJoin | undefined;
+  private lastResyncAtMs = 0;
   private lastStatusKey: string | undefined;
   private server: WebSocketServer | undefined;
   private state: PlaybackState;
@@ -578,6 +596,16 @@ export class SessionAuthority {
       this.send(socket, { type: 'state', state: this.getState() });
       return;
     }
+    // Idempotent no-op for phase-identical intents: a slow endpoint's echo
+    // (or a duplicate user click) must not bump the revision and invalidate
+    // every stored actual-state report for a state that does not change.
+    const isPhaseNoOp = (intent.kind === 'play' && this.state.mediaPhase === 'playing')
+      || (intent.kind === 'pause' && (this.state.mediaPhase === 'paused' || this.state.mediaPhase === 'ready'));
+    if (isPhaseNoOp) {
+      this.processedCommands.add(intent.commandId);
+      this.send(socket, { type: 'state', state: this.getState() });
+      return;
+    }
 
     try {
       const nextState = applyIntent(this.state, intent, Date.now());
@@ -656,14 +684,62 @@ export class SessionAuthority {
       this.broadcastSessionStatus();
       return;
     }
-
-    const evaluation = evaluateActualState(this.state, report);
+    // The observation instant is approximated by ARRIVAL time on the
+    // authority's own clock: report.positionObservedAtMs comes from the
+    // endpoint's machine, and cross-device clock skew would leak straight
+    // into the projected position and produce permanent fake drift. LAN
+    // transit delay (<10ms) is the only error this reintroduces.
+    const evaluation = evaluateActualState(this.state, report, Date.now());
     // Store the report even when inconsistent: staleness is judged against the
     // CURRENT revision at session-status time, and the diagnostic stays useful.
     this.reports.set(socket, { report, evaluation });
     if (!evaluation.consistent) {
       this.broadcast(this.buildDesyncDiagnostic(participant, report, evaluation));
     }
+    if (this.shouldTriggerResync(report, evaluation)) {
+      this.triggerResync();
+      return;
+    }
+    this.broadcastSessionStatus();
+  }
+
+  /**
+   * Periodic-sync enforcement: a report against the CURRENT revision that is
+   * still correctable-divergent (position drift beyond the 250ms tolerance, or
+   * a discrete phase/rate/duration/item mismatch) triggers ONE forced resync —
+   * the authority re-broadcasts its state under a new revision so the
+   * diverging endpoint re-applies it. Drift within the tolerance never
+   * triggers (no visible jitter), stale reports are handled by snapshot
+   * recovery, apply failures cannot be fixed by re-broadcasting, and the
+   * cooldown lets a seeking endpoint settle before another resync can fire.
+   */
+  private shouldTriggerResync(report: ActualStateReport, evaluation: ConsistencyResult): boolean {
+    if (Date.now() - this.lastResyncAtMs < RESYNC_COOLDOWN_MS) return false;
+    if (report.observedRevision !== this.state.stateRevision) return false;
+    if (report.applyResult !== 'applied') return false;
+    // A report from a DIFFERENT resource (an endpoint that navigated away or
+    // is still loading the fresh resource) cannot be corrected by
+    // re-broadcasting: the routing layer must navigate it back. Re-syncing
+    // here would also let a transitioning page ping-pong the revision.
+    const sessionIdentity = this.state.resourceIdentity;
+    if (sessionIdentity !== null && !isResourceIdentityEqual(report.resourceIdentity, sessionIdentity)) return false;
+    return evaluation.issues.some((issue) => CORRECTABLE_ISSUES[issue.kind] === true);
+  }
+
+  private triggerResync(): void {
+    const nowMs = Date.now();
+    const nextRevision = this.state.stateRevision + 1;
+    const { errorCode: _previousErrorCode, ...stateWithoutError } = this.state;
+    this.state = {
+      ...stateWithoutError,
+      stateRevision: nextRevision,
+      lastSequence: this.state.lastSequence + 1,
+      lastCommandId: `resync:${nextRevision}`,
+      updatedAtMs: nowMs,
+    };
+    this.lastResyncAtMs = nowMs;
+    this.reports.clear();
+    this.broadcast({ type: 'state', state: this.getState() });
     this.broadcastSessionStatus();
   }
 
@@ -691,7 +767,7 @@ export class SessionAuthority {
         : { resource: { expected: sessionIdentity, actual: report.resourceIdentity } }),
       expected: {
         mediaPhase: this.state.mediaPhase,
-        positionSeconds: projectPlaybackPosition(this.state, report.positionObservedAtMs),
+        positionSeconds: projectPlaybackPosition(this.state, Date.now()),
         playbackRate: this.state.playbackRate,
         ...(this.state.syncItems === undefined ? {} : { syncItems: this.state.syncItems }),
       },

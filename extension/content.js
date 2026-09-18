@@ -26,9 +26,9 @@ const HAVE_FUTURE_DATA = 3;
 const SEEK_SETTLE_POLL_MS = 25;
 const MAX_SEEK_SETTLE_POLLS = 20;
 const TARGET_RETRY_MS = 4000;
-const APPLY_SETTLE_MS = 500;
-const TIMEUPDATE_REPORT_INTERVAL_MS = 1000;
-const TIMEUPDATE_REPORT_DRIFT = 0.5;
+const APPLY_SETTLE_MS = 250;
+const TIMEUPDATE_REPORT_INTERVAL_MS = 100;
+const HEARTBEAT_INTERVAL_MS = 2000;
 const REFRESH_INTERVAL_MS = 1500;
 const PENDING_INTENT_WINDOW_MS = 700;
 const PDF_REPORT_INTERVAL_MS = 1000;
@@ -69,6 +69,7 @@ const PAGE = {
   lastSyncReportedAt: 0,
   pdfIntentTimer: null,
   pdfListenersAttached: false,
+  lastHeartbeatAt: 0,
   syncSurfaceAvailable: false,
 };
 
@@ -358,10 +359,8 @@ function onMediaEvent(event) {
 
   if (event.type === 'timeupdate') {
     const now = Date.now();
-    const drift = target ? Math.abs(target.currentTime - (PAGE.lastSentPosition ?? -Infinity)) : Infinity;
-    if (now - PAGE.lastActualSentAt < TIMEUPDATE_REPORT_INTERVAL_MS && drift < TIMEUPDATE_REPORT_DRIFT) return;
+    if (now - PAGE.lastActualSentAt < TIMEUPDATE_REPORT_INTERVAL_MS) return;
     PAGE.lastActualSentAt = now;
-    if (target) PAGE.lastSentPosition = target.currentTime;
   }
   sendToBackground({ type: 'actual-state', snapshot: readSnapshot(target) });
 }
@@ -511,6 +510,7 @@ function refresh() {
     PAGE.pendingIntentUntil = 0;
     PAGE.lastSyncSent = null;
     PAGE.syncSurfaceAvailable = false;
+    PAGE.lastHeartbeatAt = 0;
     PAGE.lastAppliedRevision = -1;
   }
 
@@ -541,6 +541,18 @@ function refresh() {
   if (identity && !PAGE.registered) {
     PAGE.registered = true;
     sendContentReady(identity, isPdfPage() ? PAGE.syncSurfaceAvailable : PAGE.target !== null);
+  }
+
+  // Heartbeat for non-playing phases: timeupdate only fires while playing, so
+  // a paused/ended page would otherwise go silent and the authority could
+  // never observe a phase or position divergence on it. Playing-phase
+  // coverage comes from the timeupdate throttle above.
+  const nowMs = Date.now();
+  if (identity && !isPdfPage() && PAGE.initialApplied && PAGE.target && !PAGE.applying
+    && nowMs - PAGE.lastHeartbeatAt >= HEARTBEAT_INTERVAL_MS
+    && phaseFor(PAGE.target) !== 'playing') {
+    PAGE.lastHeartbeatAt = nowMs;
+    sendToBackground({ type: 'actual-state', snapshot: readSnapshot(PAGE.target) });
   }
 }
 

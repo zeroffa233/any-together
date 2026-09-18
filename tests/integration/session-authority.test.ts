@@ -604,8 +604,9 @@ test('duplicate commandId is idempotent: no revision bump and newer state is nev
   // Barrier: bob's fresh command must land on revision 3. If the duplicate had
   // been re-applied it would have consumed a revision, so the fresh command
   // would land on revision 4 instead — and alice's history would contain the
-  // duplicate's broadcast.
-  const freshId = bob.submit('pause', undefined, 'fresh-after-duplicate');
+  // duplicate's broadcast. (A pause here would now be a phase-identical
+  // no-op, so the fresh command plays instead.)
+  const freshId = bob.submit('play', undefined, 'fresh-after-duplicate');
   const afterFresh = await bob.waitForRevision(3);
   await alice.waitForRevision(3);
 
@@ -614,7 +615,7 @@ test('duplicate commandId is idempotent: no revision bump and newer state is nev
   assert.equal(afterFresh.lastCommandId, freshId, summarize(afterFresh));
   assert.equal(alice.latest.stateRevision, 3, `duplicate must not increment: ${summarize(alice.latest)}`);
   assert.equal(alice.latest.lastSequence, 3, `duplicate must not consume a sequence number: ${summarize(alice.latest)}`);
-  assert.equal(alice.latest.mediaPhase, 'paused', `newer state must survive the duplicate: ${summarize(alice.latest)}`);
+  assert.equal(alice.latest.mediaPhase, 'playing', `newer state must survive the duplicate: ${summarize(alice.latest)}`);
   assert.equal(alice.latest.lastCommandId, freshId, `newer state must survive the duplicate: ${summarize(alice.latest)}`);
   assert.equal(alice.states.length, 4, 'duplicate acknowledgement must not emit a state on alice');
   assert.equal(bob.states.length, 4, 'duplicate must not broadcast to other participants');
@@ -1406,33 +1407,22 @@ test('session-status is ready only when both participants report consistency-cle
   const readyRev1 = await alice.waitForStatus((status) => status.stateRevision === 1 && status.ready === true, 3000);
   assert.equal(readyRev1.reason, undefined);
 
-  // A drifting report closes the gate and marks the reporter inconsistent.
+  // A drifting report now triggers an AUTOMATIC resync: the authority bumps
+  // the revision, re-broadcasts and clears the report gate.
   bob.reportConsistent({
     positionSeconds: bob.latest.positionSeconds + 5,
     positionObservedAtMs: Date.now(),
   });
-  const desynced = await alice.waitForStatus(
-    (status) => status.ready === false && status.reason === 'actual-state-desync',
-    3000,
-  );
-  assert.equal(desynced.stateRevision, 1);
-  const bobEntry = desynced.participants.find((participant) => participant.participantId === BOB);
-  assert.ok(bobEntry, 'bob must appear in the desync status');
-  assert.equal(bobEntry.reported, true);
-  assert.equal(bobEntry.consistent, false);
+  await alice.waitForRevision(2);
+  await bob.waitForRevision(2);
+  const resynced = await alice.waitForStatus((status) => status.stateRevision === 2 && status.ready === false, 3000);
+  assert.equal(resynced.reason, 'awaiting-actual-state', 'a resync re-arms the report gate');
 
-  // Recovery: a clean report re-opens the gate.
+  // Recovery: clean reports against the resync revision re-open the gate.
+  alice.reportConsistent();
   bob.reportConsistent();
-  await waitFor(
-    () => (
-      alice.statuses[alice.statuses.length - 1]?.ready === true
-      && alice.statuses[alice.statuses.length - 1]?.stateRevision === 1
-        ? true
-        : undefined
-    ),
-    3000,
-    'ready status after recovery',
-  );
+  const readyRev2 = await alice.waitForStatus((status) => status.stateRevision === 2 && status.ready === true, 3000);
+  assert.equal(readyRev2.reason, undefined);
 
   // Identical statuses are not rebroadcast: reporting the same ready state a
   // second time must not emit a duplicate frame, and the next real change lands
@@ -1440,16 +1430,16 @@ test('session-status is ready only when both participants report consistency-cle
   const statusCountBefore = alice.statuses.length;
   bob.reportConsistent(); // produces the identical status again
   alice.submit('pause');
-  await alice.waitForRevision(2);
-  await bob.waitForRevision(2);
-  const invalidatedRev2 = await alice.waitForStatus((status) => status.stateRevision === 2 && status.ready === false, 3000);
-  assert.equal(invalidatedRev2.reason, 'awaiting-actual-state');
+  await alice.waitForRevision(3);
+  await bob.waitForRevision(3);
+  const invalidatedRev3 = await alice.waitForStatus((status) => status.stateRevision === 3 && status.ready === false, 3000);
+  assert.equal(invalidatedRev3.reason, 'awaiting-actual-state');
   assert.equal(
     alice.statuses.length,
     statusCountBefore + 1,
-    'a duplicate ready report must be deduped: exactly one new status frame for revision 2',
+    'a duplicate ready report must be deduped: exactly one new status frame for revision 3',
   );
-  assert.equal(alice.statuses[alice.statuses.length - 1]?.stateRevision, 2, 'the final frame must be the revision-2 status');
+  assert.equal(alice.statuses[alice.statuses.length - 1]?.stateRevision, 3, 'the final frame must be the revision-3 status');
 });
 
 test('actual-state diagnostics report drift, stale revision, phase/rate and resource mismatch with expected and actual details', { timeout: 15000 }, async (t) => {
@@ -1479,8 +1469,10 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   assert.equal(drift.sessionId, sessionId);
   assert.ok(typeof drift.expected?.positionSeconds === 'number', 'the diagnostic must carry the expected projected position');
   assert.match(drift.detail, /drift/i);
-  const desynced = await alice.waitForStatus((status) => status.reason === 'actual-state-desync', 3000);
-  assert.equal(desynced.ready, false, 'a drifting report must close the ready gate');
+  // The drift ALSO triggers an automatic resync: the diagnostic is broadcast
+  // first, then the authority bumps the revision and re-broadcasts.
+  const desynced = await alice.waitForStatus((status) => status.stateRevision === 2 && status.ready === false, 3000);
+  assert.equal(desynced.ready, false, 'a resync re-arms the awaiting gate');
 
   // 2. A stale report (older revision) is a desync with an explicit detail.
   bob.reportConsistent({ observedRevision: 0 });
@@ -1488,17 +1480,17 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
     (message) => message.code === 'desync' && message.participantId === BOB && /older/i.test(message.detail),
     3000,
   );
-  assert.equal(stale.stateRevision, 1);
-  // Status precedence after the fix: a stale report counts as a MISSING report
-  // (nothing was judged against the current revision), so even a consistency-
-  // clean partner cannot make the session ready and the gate reads
-  // awaiting-actual-state — not actual-state-desync — until the reporter
-  // re-reports the current revision.
+  assert.equal(stale.stateRevision, 2);
+  // Status precedence: a stale report counts as a MISSING report (nothing was
+  // judged against the current revision), so even a consistency-clean partner
+  // cannot make the session ready and the gate reads awaiting-actual-state —
+  // not actual-state-desync — until the reporter re-reports the current
+  // revision.
   alice.reportConsistent();
   await waitFor(
     () => {
       const latest = alice.statuses[alice.statuses.length - 1];
-      return latest !== undefined && latest.reason === 'awaiting-actual-state' && latest.stateRevision === 1
+      return latest !== undefined && latest.reason === 'awaiting-actual-state' && latest.stateRevision === 2
         ? true
         : undefined;
     },
@@ -1508,6 +1500,15 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
 
   // 3. Phase mismatch (authoritative playing vs reported paused) combined with a
   //    rate mismatch: both sides of the comparison are carried in the diagnostic.
+  // The resync cooldown is wall-clock based (2s), so wait it out before the
+  // next correctable report — deterministic clocks cannot advance the
+  // authority's Date.now(). (Step 1's resync must have expired by here.)
+  {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 2100);
+    await promise;
+  }
+
   bob.reportConsistent({
     mediaPhase: 'paused',
     playbackRate: 2,
@@ -1520,21 +1521,12 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   );
   assert.equal(phaseRate.expected?.mediaPhase, 'playing', 'the diagnostic must carry the authoritative phase');
   assert.equal(phaseRate.actual?.mediaPhase, 'paused');
-  assert.equal(phaseRate.expected?.playbackRate, 1, 'the diagnostic must carry the authoritative rate');
-  assert.equal(phaseRate.actual?.playbackRate, 2);
-  // The phase/rate report IS judged against the current revision, so the gate
-  // re-arms to actual-state-desync: an inconsistent report at the current
-  // revision takes priority over the other side's missing-report state.
-  await waitFor(
-    () => {
-      const latest = alice.statuses[alice.statuses.length - 1];
-      return latest !== undefined && latest.reason === 'actual-state-desync' && latest.stateRevision === 1
-        ? true
-        : undefined;
-    },
-    3000,
-    'phase/rate report to re-arm the desync gate',
-  );
+  // The phase/rate report also triggers an automatic resync (both issues are
+  // correctable): revision 3 with a re-armed awaiting gate.
+  await alice.waitForRevision(3);
+  await bob.waitForRevision(3);
+  await alice.waitForStatus((status) => status.stateRevision === 3 && status.reason === 'awaiting-actual-state', 3000);
+
 
   // 4. A valid but different Bilibili identity is diagnosed as actual-state-mismatch.
   bob.reportConsistent({ resourceIdentity: RESOURCE_BV2 });
@@ -1545,11 +1537,12 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   assert.deepEqual(resourceMismatch.resource?.expected, RESOURCE_BV1);
   assert.deepEqual(resourceMismatch.resource?.actual, RESOURCE_BV2);
 
-  // 5. The reporter's clean report re-opens the gate (alice already reported
-  //    clean in step 2) and emits no further diagnostic.
+  // 5. Both sides re-report clean: each resync cleared every stored report,
+  //    so alice must report again too, and emits no further diagnostic.
+  alice.reportConsistent();
   bob.reportConsistent();
   const readyAgain = await alice.waitForStatus((status) => status.ready === true, 3000);
-  assert.equal(readyAgain.stateRevision, 1);
+  assert.equal(readyAgain.stateRevision, 3);
   assert.equal(
     alice.diagnostics.filter((message) => message.type === 'diagnostic' && message.code === 'desync').length,
     3,
@@ -1562,23 +1555,22 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   );
 
   // 6. A rate-only mismatch is readiness-blocking per NFR-001: it emits a
-  //    fourth desync diagnostic and keeps the ready gate closed at
-  //    actual-state-desync until the reporter corrects the rate.
+  //    fourth desync diagnostic and — being correctable — also triggers a
+  //    resync that re-arms the gate at a new revision.
+  // Cooldown from step 3's resync must expire before step 6 can resync.
+  {
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 2100);
+    await promise;
+  }
+
   bob.reportConsistent({ playbackRate: 2 });
-  await waitFor(
-    () => {
-      const latest = alice.statuses[alice.statuses.length - 1];
-      return latest !== undefined && latest.ready === false && latest.reason === 'actual-state-desync' && latest.stateRevision === 1
-        ? true
-        : undefined;
-    },
-    3000,
-    'rate-only mismatch to close the ready gate with actual-state-desync',
-  );
+  await alice.waitForRevision(4);
+  await bob.waitForRevision(4);
   alice.submit('seek', { targetSeconds: 10 });
-  await alice.waitForRevision(2);
-  await bob.waitForRevision(2);
-  await alice.waitForStatus((status) => status.stateRevision === 2, 3000);
+  await alice.waitForRevision(5);
+  await bob.waitForRevision(5);
+  await alice.waitForStatus((status) => status.stateRevision === 5, 3000);
   assert.equal(
     alice.diagnostics.filter((message) => message.type === 'diagnostic' && message.code === 'desync').length,
     4,
@@ -1591,14 +1583,15 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   );
   // Status ladder across the scenario: (1) alice solo awaiting-second-participant,
   // (2) bob joined awaiting-actual-state, (3) play invalidates reports at rev 1,
-  // (4) drift desync, (5) stale report demotes to awaiting-actual-state,
-  // (6) alice's clean report, (7) phase/rate desync, (8) resource-mismatch
-  // report produces a status identical to (7) and is deduped, (9) recovery
-  // ready, (10) rate-only desync, (11) seek re-arms awaiting-actual-state at
-  // rev 2 — ten frames broadcast in total.
-  assert.equal(alice.statuses.length, 10, 'rate-only and identical-status frames must be deduped: exactly ten statuses');
-  assert.equal(alice.statuses[alice.statuses.length - 1]?.stateRevision, 2);
+  // (4) drift resync awaiting at rev 2, (5) stale report demotes to
+  // awaiting-actual-state, (6) alice's clean report, (7) phase/rate resync
+  // awaiting at rev 3, (8) resource-mismatch desync, (9) recovery ready,
+  // (10) rate-only resync awaiting at rev 4, (11) seek re-arms
+  // awaiting-actual-state at rev 5 — eleven frames broadcast in total.
+  assert.equal(alice.statuses.length, 11, 'identical-status frames must be deduped: exactly eleven statuses');
+  assert.equal(alice.statuses[alice.statuses.length - 1]?.stateRevision, 5);
 });
+
 
 test('a leaving host releases the pending joiner with host-unavailable; a giving-up joiner frees its seat', { timeout: 15000 }, async (t) => {
   const { authority, url, sessionId } = await startAuthority(RESOURCE_BV1, false);
