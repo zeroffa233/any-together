@@ -14,6 +14,34 @@
  */
 
 const $ = (id) => document.getElementById(id);
+function parseShareString(raw) {
+  if (typeof raw !== 'string') return null;
+  const text = raw.trim();
+  const payload = text.startsWith('anytogether://')
+    ? text.slice('anytogether://'.length)
+    : text;
+  if (!payload.startsWith('session?')) return null;
+
+  const params = Object.create(null);
+  const query = payload.slice('session?'.length);
+  if (!query) return null;
+  for (const part of query.split('&')) {
+    const separator = part.indexOf('=');
+    if (separator <= 0) return null;
+    const key = part.slice(0, separator);
+    if (!['host', 'port', 'session'].includes(key) || Object.hasOwn(params, key)) return null;
+    try {
+      params[key] = decodeURIComponent(part.slice(separator + 1));
+    } catch {
+      return null;
+    }
+  }
+
+  if (!params.host || !params.port || !params.session || !/^\d+$/.test(params.port)) return null;
+  const port = Number(params.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { host: params.host, port, session: params.session };
+}
 
 const ADAPTER_LABELS = { bilibili: 'Bilibili', youtube: 'YouTube', 'local-video': '本地视频', 'arxiv-pdf': 'arXiv PDF' };
 
@@ -277,6 +305,7 @@ function setMode(next, skipFetch = false) {
     : '主机分享的地址（IP 或主机名）';
   $('copysession').hidden = !host;
   $('localsession').hidden = !host;
+  $('parseshare').hidden = !host;
   const sessionInput = $('session');
   sessionInput.placeholder = host ? '本机 Session ID' : '主机分享的 Session ID';
   if (host) {
@@ -373,6 +402,30 @@ async function copySession() {
   const copied = await copyText(reply.share);
   if (copied) showNotice('已复制，可发送给从机');
   else showError('复制失败，请手动复制分享串');
+}
+
+async function pasteShare() {
+  let clipboardText;
+  try {
+    clipboardText = await navigator.clipboard.readText();
+  } catch {
+    showError('读取剪贴板失败，请手动粘贴到 Session ID 输入框');
+    return;
+  }
+
+  const parsed = parseShareString(clipboardText) ?? parseShareString($('session').value);
+  if (!parsed) {
+    showError('无法识别分享串，请粘贴 anytogether://session?... 格式');
+    return;
+  }
+
+  if (mode === 'host') setMode('client');
+  $('server').value = parsed.host;
+  $('port').value = String(parsed.port);
+  $('session').value = parsed.session;
+  clearFieldErrors();
+  updateShareAvailability();
+  showNotice('已解析分享串并填入连接信息');
 }
 
 async function doConnect() {
@@ -959,6 +1012,14 @@ $('modehost').addEventListener('change', () => setMode('host'));
 $('modeclient').addEventListener('change', () => setMode('client'));
 
 $('session').addEventListener('input', () => {
+  const parsed = parseShareString($('session').value);
+  if (parsed) {
+    if (mode === 'host') setMode('client');
+    $('server').value = parsed.host;
+    $('port').value = String(parsed.port);
+    $('session').value = parsed.session;
+    showNotice('已解析分享串并填入连接信息');
+  }
   clearFieldErrors();
   updateShareAvailability();
 });
@@ -981,6 +1042,10 @@ $('localsession').addEventListener('click', () => {
 
 $('copysession').addEventListener('click', () => {
   void copySession();
+});
+
+$('parseshare').addEventListener('click', () => {
+  void pasteShare();
 });
 
 $('copyshare').addEventListener('click', () => {
@@ -1034,3 +1099,7 @@ document.addEventListener('keydown', (event) => {
     trapPanelTab(event);
   }
 });
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { parseShareString };
+}
