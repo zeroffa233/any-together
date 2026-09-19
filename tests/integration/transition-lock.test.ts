@@ -98,6 +98,12 @@ test('a bind during an unconfirmed transition is ignored until both endpoints re
     host.reportActualState(body);
     client.reportActualState(body);
 
+    // Confirmation starts the 1.5s post-switch grace window (wall-clock based
+    // in the authority); wait it out before the next switch is accepted.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 1600);
+    await promise;
+
     // Now a new switch is accepted again.
     client.sendResourceBind(BV3);
     const afterUnlock = await waitForStateBeyond(client, afterFirst.stateRevision, 'post-unlock bind');
@@ -145,6 +151,52 @@ test('an identical bind during the transition stays an idempotent no-op', { time
     await new Promise<void>((resolve) => setTimeout(resolve, 200));
     assert.equal(authority.getState().stateRevision, revision);
     assert.deepEqual(authority.getState().resourceIdentity, BV2);
+  } finally {
+    await client.close();
+    await host.close();
+    await authority.stop();
+  }
+});
+
+// The grace window (1.5s) starts when BOTH endpoints confirm the target, so
+// this case needs real wall-clock time around the confirmation.
+test('after a confirmed switch, a late old-resource echo inside the grace is absorbed', { timeout: 20000 }, async () => {
+  const { authority, host, client } = await startPair();
+  try {
+    host.sendResourceBind(BV2);
+    const afterFirst = await waitForStateBeyond(client, 0, 'first bind');
+
+    // Both confirm BV2: the lock releases into the 1.5s grace window.
+    const body = {
+      observedRevision: authority.getState().stateRevision,
+      mediaPhase: 'paused',
+      positionSeconds: 0,
+      positionObservedAtMs: Date.now(),
+      playbackRate: 1,
+      durationSeconds: null,
+      applyResult: 'applied',
+    } as const;
+    host.reportActualState(body);
+    client.reportActualState(body);
+    await waitFor(
+      () => (authority.getState().stateRevision === afterFirst.stateRevision ? true : undefined),
+      3000,
+      'confirmation',
+    ).catch(() => {});
+
+    // Late echo of the OLD resource (BV1) right after confirmation: absorbed.
+    host.sendResourceBind(BV1);
+    await new Promise<void>((resolve) => setTimeout(resolve, 400));
+    assert.equal(authority.getState().stateRevision, afterFirst.stateRevision, 'grace must absorb the late echo');
+    assert.deepEqual(authority.getState().resourceIdentity, BV2);
+
+    // After the grace expires, a genuine switch is accepted again.
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 1600);
+    await promise;
+    client.sendResourceBind(BV3);
+    const after = await waitForStateBeyond(client, afterFirst.stateRevision, 'post-grace bind');
+    assert.deepEqual(after.resourceIdentity, BV3);
   } finally {
     await client.close();
     await host.close();

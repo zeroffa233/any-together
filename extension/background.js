@@ -56,6 +56,7 @@ const SESSION = {
   pendingLocalPermission: null, // { origin, pattern, canonicalUrl } awaiting popup user gesture
   injectedLocalTabs: new Set(), // local-video tabs injected after navigation
   commandedNavigations: new Map(), // tabId -> { url, atMs } navigations we issued via routeCanonical
+  lastRoutedFingerprint: null, // resource fingerprint whose URL we already auto-navigated to once
   identity: null, // session ResourceIdentity; adopted from join-accepted or a
   // newer authoritative state after a participant resource-bind
   // Client-only one-time auto recovery: once the authority reports the session
@@ -618,12 +619,18 @@ function markCommandedNavigation(tabId, url) {
  * the tab elsewhere, or the session lands on the identity, the retry stops —
  * so echoes cannot resurrect and genuine intent is never lost.
  */
-function scheduleBindRetry(tabId, identity, attemptsLeft) {
+function scheduleBindRetry(tabId, identity, attemptsLeft, baseline) {
   if (attemptsLeft <= 0 || SESSION.status !== 'connected') return;
   setTimeout(() => {
     if (SESSION.status !== 'connected') return;
     // Landed: the session followed this identity.
     if (SESSION.identity && IDENTITY.identityEqual(identity, SESSION.identity)) return;
+    // The session has moved to a DIFFERENT identity than both the request and
+    // the baseline it had when the retry started: the transition confirmed on
+    // another resource, so this request is a stale echo — never resurrect it.
+    if (SESSION.identity && baseline !== null
+      && !IDENTITY.identityEqual(identity, SESSION.identity)
+      && !IDENTITY.identityEqual(SESSION.identity, baseline)) return;
     // A different bind is in flight: it owns the outcome now.
     if (SESSION.bindInFlight !== null && !IDENTITY.identityEqual(identity, SESSION.bindInFlight)) return;
     void (async () => {
@@ -634,7 +641,7 @@ function scheduleBindRetry(tabId, identity, attemptsLeft) {
         if (tabId === applyTargetTabId() || tab.active === true) {
           adoptApplyTarget(tabId);
           sendResourceBind(identity);
-          scheduleBindRetry(tabId, identity, attemptsLeft - 1);
+          scheduleBindRetry(tabId, identity, attemptsLeft - 1, baseline);
         }
       } catch {
         // Tab gone: nothing to prove anymore.
@@ -786,7 +793,19 @@ async function sendApplyToTab(state) {
         // state will re-route both sides. Apply nothing to the foreign page.
         return;
       }
-      // Unsupported/blank page: navigate it back to the session resource.
+      // Unsupported/blank page. Once THIS resource identity has been
+      // auto-navigated to (fresh join or switch), a non-video page such as a
+      // Bilibili search is USER intent — dragging the tab back would fight
+      // the user. Leave gracefully; returning to a supported page (or opening
+      // a new video there) re-registers via content-ready and restores sync.
+      // Routing is still allowed when this identity was never routed (initial
+      // open, service-worker restart, or a dead tab).
+      const fingerprint = identityFingerprint(state.resourceIdentity);
+      if (SESSION.lastRoutedFingerprint === fingerprint) {
+        if (!SESSION.notice) setNotice('已暂时离开会话视频；回到支持的视频页将自动恢复同步');
+        return;
+      }
+      SESSION.lastRoutedFingerprint = fingerprint;
       await routeCanonical(canonicalUrl);
       if (applyTargetTabId() === null) return;
     }
@@ -1110,7 +1129,7 @@ chrome.tabs.onActivated.addListener((info) => {
         sendResourceBind(identity);
         // Tab activation is a deliberate user action: prove the intent
         // persistently in case the authority is mid-transition.
-        scheduleBindRetry(info.tabId, identity, 6);
+        scheduleBindRetry(info.tabId, identity, 6, SESSION.identity);
       } else {
         // Same resource in a fresh tab/window: take it over and re-apply.
         enqueueApply();
@@ -1241,23 +1260,24 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const commanded = SESSION.commandedNavigations.get(tabId);
           if (commanded && Date.now() - commanded.atMs < COMMANDED_NAV_WINDOW_MS) {
             enqueueApply();
-            scheduleBindRetry(tabId, identity, 4);
+            scheduleBindRetry(tabId, identity, 4, SESSION.identity);
             return undefined;
           }
           adoptApplyTarget(tabId);
           sendResourceBind(identity);
-          scheduleBindRetry(tabId, identity, 6);
+          scheduleBindRetry(tabId, identity, 6, SESSION.identity);
         }
         return undefined;
       }
 
       // Unsupported/blank page: only matters when it is the current apply
-      // target — dropping it lets routing re-open the session page.
+      // target — drop it, but do NOT auto-reopen: navigating away from the
+      // video page is user intent (e.g. searching). Returning to a supported
+      // page re-registers and restores sync.
       if (!identity) {
         if (isOwnTab) {
           clearApplyTarget();
-          setNotice('当前页面已离开会话视频，正在重新打开目标页面');
-          enqueueApply();
+          if (!SESSION.notice) setNotice('已暂时离开会话视频；回到支持的视频页将自动恢复同步');
         }
         return undefined;
       }

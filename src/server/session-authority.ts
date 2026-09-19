@@ -98,6 +98,14 @@ const RESYNC_COOLDOWN_MS = 2000;
  */
 const TRANSITION_TIMEOUT_MS = 5000;
 
+/**
+ * After a CONFIRMED switch, old-resource echoes may still be in flight (slow
+ * pages, SPA residue, a late tab activation). For this window further
+ * different-identity binds are still ignored; a genuine switch made inside
+ * the grace is re-asserted by the extension's persistent-intent retry.
+ */
+const TRANSITION_GRACE_MS = 1500;
+
 type PendingJoin = {
   socket: WebSocket;
   participantId: string;
@@ -119,6 +127,7 @@ export class SessionAuthority {
   private lastStatusKey: string | undefined;
   /** In-flight resource switch: null when stable, target+since while navigating. */
   private transition: { target: ResourceIdentity; sinceMs: number } | null = null;
+  private transitionGraceUntilMs = 0;
   private server: WebSocketServer | undefined;
   private state: PlaybackState;
 
@@ -518,8 +527,9 @@ export class SessionAuthority {
     // is what produced the X/Y oscillation. The echo never re-binds: the
     // extension filters its own commanded navigations, and a genuine switch
     // made during the transition re-binds with a persistent-intent retry that
-    // survives past the timeout below.
-    if (this.transition !== null) {
+    // survives past the timeout below. A short grace period AFTER a confirmed
+    // switch absorbs late echoes of the OLD resource the same way.
+    if (this.transition !== null || Date.now() < this.transitionGraceUntilMs) {
       this.send(socket, { type: 'state', state: this.getState() });
       return;
     }
@@ -564,7 +574,11 @@ export class SessionAuthority {
       if (entry === undefined) return;
       if (!isResourceIdentityEqual(entry.report.resourceIdentity, transition.target)) return;
     }
+    // Confirmed: keep rejecting OLD-resource echoes for a short grace window.
+    // (The timeout-unlock path above deliberately grants no grace — it already
+    // waited the full timeout for a switch that never confirmed.)
     this.transition = null;
+    this.transitionGraceUntilMs = Date.now() + TRANSITION_GRACE_MS;
   }
 
   private expireTransition(): void {
