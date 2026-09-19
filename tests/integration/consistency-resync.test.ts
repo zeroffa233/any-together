@@ -71,15 +71,26 @@ function reportBody(
   };
 }
 
-test('a drifting report beyond 250ms triggers one resync revision both clients converge on', { timeout: 15000 }, async () => {
+test('a drift persisting across 3 consecutive reports triggers one resync both clients converge on', { timeout: 15000 }, async () => {
   const { authority, host, client } = await startPair();
   try {
     host.submitIntent('play');
     await waitFor(() => (authority.getState().mediaPhase === 'playing' ? authority.getState() : undefined), 5000, 'play');
 
-    // Report a position ~5s behind the authority's projection: a correctable
-    // drift that must trigger exactly one resync bump.
-    client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+    // Report a position ~5s behind the authority's projection. Samples 1 and
+    // 2 only surface as diagnostics; the 3rd consecutive divergent sample
+    // crosses the persistence gate and triggers exactly one resync bump.
+    for (let sample = 1; sample <= 3; sample += 1) {
+      client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+      if (sample < 3) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 120));
+        assert.equal(
+          authority.getState().lastCommandId?.startsWith('resync:') ?? false,
+          false,
+          `sample ${sample} must not trigger a resync yet`,
+        );
+      }
+    }
     const resynced = await waitFor(
       () => (authority.getState().lastCommandId?.startsWith('resync:') ? authority.getState() : undefined),
       5000,
@@ -100,6 +111,35 @@ test('a drifting report beyond 250ms triggers one resync revision both clients c
     );
     assert.equal(hostState.lastCommandId, clientState.lastCommandId);
     assert.ok(hostState.lastCommandId?.startsWith('resync:'));
+  } finally {
+    await client.close();
+    await host.close();
+    await authority.stop();
+  }
+});
+
+test('a single divergent sample is noise: diagnostic only, never a resync', { timeout: 15000 }, async () => {
+  const { authority, host, client } = await startPair();
+  try {
+    host.submitIntent('play');
+    await waitFor(() => (authority.getState().mediaPhase === 'playing' ? authority.getState() : undefined), 5000, 'play');
+    const revisionBefore = authority.getState().stateRevision;
+
+    client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+    // The next sample is clean: the streak resets, the transient divergence
+    // is forgotten and no resync may ever fire for it.
+    client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 0.05 }));
+    const deadline = Date.now() + 2300;
+    while (Date.now() < deadline) {
+      assert.equal(authority.getState().stateRevision, revisionBefore, 'a single sample must not resync');
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 50);
+      await promise;
+    }
+    assert.ok(
+      authority.getState().lastCommandId?.startsWith('resync:') !== true,
+      'no resync may appear after the streak reset',
+    );
   } finally {
     await client.close();
     await host.close();
@@ -138,7 +178,14 @@ test('resync respects the cooldown: a second drift inside 2s does not double-bum
     host.submitIntent('play');
     await waitFor(() => (authority.getState().mediaPhase === 'playing' ? authority.getState() : undefined), 5000, 'play');
 
-    client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+    // Three consecutive divergent samples cross the persistence gate and
+    // trigger the first resync.
+    for (let sample = 0; sample < 3; sample += 1) {
+      client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 60);
+      await promise;
+    }
     const first = await waitFor(
       () => (authority.getState().lastCommandId?.startsWith('resync:') ? authority.getState() : undefined),
       5000,
@@ -155,14 +202,21 @@ test('resync respects the cooldown: a second drift inside 2s does not double-bum
       assert.equal(authority.getState().stateRevision, first.stateRevision, 'cooldown must suppress the second resync');
     }
 
-    // After the cooldown, a fresh drifting report triggers again. The 2s wait
-    // is deliberate: the cooldown is wall-clock based inside SessionAuthority.
+    // After the cooldown, fresh drifting reports re-accumulate the streak
+    // (one was already counted just after the resync) and re-trigger. The 2s
+    // wait is deliberate: the cooldown is wall-clock based inside
+    // SessionAuthority.
     {
       const { promise, resolve } = Promise.withResolvers<void>();
       setTimeout(resolve, 2100);
       await promise;
     }
-    client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+    for (let sample = 0; sample < 3; sample += 1) {
+      client.reportActualState(reportBody(authority, { mediaPhase: 'playing', positionSeconds: 5 }));
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 60);
+      await promise;
+    }
     const second = await waitFor(
       () => (authority.getState().stateRevision > first.stateRevision ? authority.getState() : undefined),
       5000,

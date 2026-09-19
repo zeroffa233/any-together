@@ -72,6 +72,14 @@ type Participant = {
 type ParticipantReport = {
   report: ActualStateReport;
   evaluation: ConsistencyResult;
+  /**
+   * Consecutive correctable-divergent reports against the CURRENT revision.
+   * A resync only fires after RESYNC_CONFIRM_STREAK in a row: single samples
+   * during seeks, buffers or page loads are transient and must never force a
+   * correction — only a divergence that persists across consecutive samples
+   * proves the endpoint is genuinely settled in the wrong state.
+   */
+  divergentStreak: number;
 };
 
 /**
@@ -90,6 +98,16 @@ const CORRECTABLE_ISSUES: Record<string, true> = {
 
 /** Minimum gap between forced resyncs, so a seeking endpoint can settle. */
 const RESYNC_COOLDOWN_MS = 2000;
+
+/**
+ * Consecutive correctable-divergent reports (against the CURRENT revision)
+ * required before a resync fires. With the ~250ms playing-phase report
+ * cadence this confirms real drift in under a second, while single samples
+ * distorted by a seek, a buffer or page load never accumulate a streak.
+ * Transient phases (buffering/seeking) produce no correctable issues at all,
+ * so "the state is changing" is exempt by construction.
+ */
+const RESYNC_CONFIRM_STREAK = 3;
 
 /**
  * How long a resource switch may stay unconfirmed. Every actual-state report
@@ -757,12 +775,24 @@ export class SessionAuthority {
     const evaluation = evaluateActualState(this.state, report, Date.now());
     // Store the report even when inconsistent: staleness is judged against the
     // CURRENT revision at session-status time, and the diagnostic stays useful.
-    this.reports.set(socket, { report, evaluation });
+    // The divergent streak only accumulates for reports against the CURRENT
+    // revision carrying a correctable issue; anything else (stale echo,
+    // transient phase, clean state) resets it.
+    const previous = this.reports.get(socket);
+    const streakCarry = previous !== undefined && previous.report.observedRevision === this.state.stateRevision
+      ? previous.divergentStreak
+      : 0;
+    const divergentStreak = report.observedRevision === this.state.stateRevision
+      && report.applyResult === 'applied'
+      && evaluation.issues.some((issue) => CORRECTABLE_ISSUES[issue.kind] === true)
+      ? streakCarry + 1
+      : 0;
+    this.reports.set(socket, { report, evaluation, divergentStreak });
     this.checkTransitionUnlock();
     if (!evaluation.consistent) {
       this.broadcast(this.buildDesyncDiagnostic(participant, report, evaluation));
     }
-    if (this.shouldTriggerResync(report, evaluation)) {
+    if (this.shouldTriggerResync(socket, report, evaluation)) {
       this.triggerResync();
       return;
     }
@@ -770,16 +800,18 @@ export class SessionAuthority {
   }
 
   /**
-   * Periodic-sync enforcement: a report against the CURRENT revision that is
-   * still correctable-divergent (position drift beyond the 250ms tolerance, or
-   * a discrete phase/rate/duration/item mismatch) triggers ONE forced resync —
-   * the authority re-broadcasts its state under a new revision so the
-   * diverging endpoint re-applies it. Drift within the tolerance never
-   * triggers (no visible jitter), stale reports are handled by snapshot
-   * recovery, apply failures cannot be fixed by re-broadcasting, and the
-   * cooldown lets a seeking endpoint settle before another resync can fire.
+   * Periodic-sync enforcement: a divergence against the CURRENT revision that
+   * PERSISTS across RESYNC_CONFIRM_STREAK consecutive reports (drift beyond
+   * the 250ms tolerance, or a discrete phase/rate/duration/item mismatch)
+   * triggers ONE forced resync — the authority re-broadcasts its state under
+   * a new revision so the diverging endpoint re-applies it. Single samples
+   * distorted by a seek, buffer or page load never fire (streak resets on any
+   * clean/transient/stale report); drift within the tolerance never counts;
+   * stale reports are handled by snapshot recovery; apply failures cannot be
+   * fixed by re-broadcasting; and the cooldown lets a seeking endpoint settle
+   * before another resync can fire.
    */
-  private shouldTriggerResync(report: ActualStateReport, evaluation: ConsistencyResult): boolean {
+  private shouldTriggerResync(socket: WebSocket, report: ActualStateReport, evaluation: ConsistencyResult): boolean {
     if (Date.now() - this.lastResyncAtMs < RESYNC_COOLDOWN_MS) return false;
     if (report.observedRevision !== this.state.stateRevision) return false;
     if (report.applyResult !== 'applied') return false;
@@ -789,7 +821,11 @@ export class SessionAuthority {
     // here would also let a transitioning page ping-pong the revision.
     const sessionIdentity = this.state.resourceIdentity;
     if (sessionIdentity !== null && !isResourceIdentityEqual(report.resourceIdentity, sessionIdentity)) return false;
-    return evaluation.issues.some((issue) => CORRECTABLE_ISSUES[issue.kind] === true);
+    // Persistence gate: a single divergent sample is noise (seek, buffer,
+    // decode hiccup) and only surfaces as a diagnostic. The resync fires when
+    // the divergence PERSISTS across consecutive samples for this revision.
+    const streak = this.reports.get(socket)?.divergentStreak ?? 0;
+    return streak >= RESYNC_CONFIRM_STREAK;
   }
 
   private triggerResync(): void {

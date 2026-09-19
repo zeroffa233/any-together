@@ -1407,12 +1407,18 @@ test('session-status is ready only when both participants report consistency-cle
   const readyRev1 = await alice.waitForStatus((status) => status.stateRevision === 1 && status.ready === true, 3000);
   assert.equal(readyRev1.reason, undefined);
 
-  // A drifting report now triggers an AUTOMATIC resync: the authority bumps
-  // the revision, re-broadcasts and clears the report gate.
-  bob.reportConsistent({
-    positionSeconds: bob.latest.positionSeconds + 5,
-    positionObservedAtMs: Date.now(),
-  });
+  // A drift persisting across 3 consecutive reports triggers an AUTOMATIC
+  // resync: the authority bumps the revision, re-broadcasts and clears the
+  // report gate. (The first two samples only surface as diagnostics.)
+  for (let sample = 0; sample < 3; sample += 1) {
+    bob.reportConsistent({
+      positionSeconds: bob.latest.positionSeconds + 5,
+      positionObservedAtMs: Date.now(),
+    });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 60);
+    await promise;
+  }
   await alice.waitForRevision(2);
   await bob.waitForRevision(2);
   const resynced = await alice.waitForStatus((status) => status.stateRevision === 2 && status.ready === false, 3000);
@@ -1458,9 +1464,16 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   await alice.waitForRevision(1);
   await bob.waitForRevision(1);
 
-  // 1. Position drift beyond the 250ms threshold.
+  // 1. Position drift beyond the 250ms threshold. The drift must persist
+  //    across 3 consecutive reports before the automatic resync fires; each
+  //    sample emits its own desync diagnostic.
   const driftedPosition = bob.latest.positionSeconds + 5;
-  bob.reportConsistent({ positionSeconds: driftedPosition, positionObservedAtMs: Date.now() });
+  for (let sample = 0; sample < 3; sample += 1) {
+    bob.reportConsistent({ positionSeconds: driftedPosition, positionObservedAtMs: Date.now() });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 60);
+    await promise;
+  }
   const drift = await alice.waitForDiagnostic(
     (message) => message.code === 'desync' && message.participantId === BOB && message.actual?.positionSeconds === driftedPosition,
     3000,
@@ -1515,6 +1528,18 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
     positionSeconds: bob.latest.positionSeconds,
     positionObservedAtMs: Date.now(),
   });
+  // The phase/rate divergence must also persist across 3 reports to resync.
+  for (let sample = 0; sample < 2; sample += 1) {
+    bob.reportConsistent({
+      mediaPhase: 'paused',
+      playbackRate: 2,
+      positionSeconds: bob.latest.positionSeconds,
+      positionObservedAtMs: Date.now(),
+    });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 60);
+    await promise;
+  }
   const phaseRate = await alice.waitForDiagnostic(
     (message) => message.code === 'desync' && message.participantId === BOB && message.actual?.mediaPhase === 'paused',
     3000,
@@ -1545,8 +1570,8 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   assert.equal(readyAgain.stateRevision, 3);
   assert.equal(
     alice.diagnostics.filter((message) => message.type === 'diagnostic' && message.code === 'desync').length,
-    3,
-    'exactly three desync diagnostics: drift, stale revision, phase/rate',
+    7,
+    'exactly seven desync diagnostics: 3 drift samples, stale revision, 3 phase/rate samples',
   );
   assert.equal(
     alice.diagnostics.filter((message) => message.type === 'diagnostic' && message.code === 'actual-state-mismatch').length,
@@ -1554,9 +1579,9 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
     'exactly one actual-state-mismatch diagnostic',
   );
 
-  // 6. A rate-only mismatch is readiness-blocking per NFR-001: it emits a
-  //    fourth desync diagnostic and — being correctable — also triggers a
-  //    resync that re-arms the gate at a new revision.
+  // 6. A rate-only mismatch is readiness-blocking per NFR-001: each sample
+  //    emits a desync diagnostic and — being correctable — the third one also
+  //    triggers a resync that re-arms the gate at a new revision.
   // Cooldown from step 3's resync must expire before step 6 can resync.
   {
     const { promise, resolve } = Promise.withResolvers<void>();
@@ -1564,7 +1589,12 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
     await promise;
   }
 
-  bob.reportConsistent({ playbackRate: 2 });
+  for (let sample = 0; sample < 3; sample += 1) {
+    bob.reportConsistent({ playbackRate: 2 });
+    const { promise, resolve } = Promise.withResolvers<void>();
+    setTimeout(resolve, 60);
+    await promise;
+  }
   await alice.waitForRevision(4);
   await bob.waitForRevision(4);
   alice.submit('seek', { targetSeconds: 10 });
@@ -1573,22 +1603,23 @@ test('actual-state diagnostics report drift, stale revision, phase/rate and reso
   await alice.waitForStatus((status) => status.stateRevision === 5, 3000);
   assert.equal(
     alice.diagnostics.filter((message) => message.type === 'diagnostic' && message.code === 'desync').length,
-    4,
-    'exactly four desync diagnostics: drift, stale revision, phase/rate, rate-only',
+    10,
+    'exactly ten desync diagnostics: 3 drift + stale + 3 phase/rate + 3 rate-only samples',
   );
   assert.equal(
     alice.diagnostics.filter((message) => message.type === 'diagnostic' && message.code === 'actual-state-mismatch').length,
     1,
-    'the rate-only report must not add a mismatch diagnostic',
+    'the rate-only samples must not add a mismatch diagnostic',
   );
   // Status ladder across the scenario: (1) alice solo awaiting-second-participant,
   // (2) bob joined awaiting-actual-state, (3) play invalidates reports at rev 1,
-  // (4) drift resync awaiting at rev 2, (5) stale report demotes to
-  // awaiting-actual-state, (6) alice's clean report, (7) phase/rate resync
-  // awaiting at rev 3, (8) resource-mismatch desync, (9) recovery ready,
-  // (10) rate-only resync awaiting at rev 4, (11) seek re-arms
-  // awaiting-actual-state at rev 5 — eleven frames broadcast in total.
-  assert.equal(alice.statuses.length, 11, 'identical-status frames must be deduped: exactly eleven statuses');
+  // (4) first drift sample desync at rev 1, (5) drift resync awaiting at rev 2
+  // (both unreported), (6) alice's clean report at rev 2 (bob still unreported),
+  // (7) first phase/rate sample desync, (8) phase/rate resync awaiting at
+  // rev 3, (9) resource-mismatch desync, (10) recovery ready, (11) rate-only
+  // sample desync, (12) rate-only resync awaiting at rev 4, (13) seek re-arms
+  // awaiting-actual-state at rev 5 — fourteen frames in total.
+  assert.equal(alice.statuses.length, 14, 'identical-status frames must be deduped: exactly fourteen statuses');
   assert.equal(alice.statuses[alice.statuses.length - 1]?.stateRevision, 5);
 });
 
