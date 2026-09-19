@@ -111,12 +111,9 @@ let lastStatusInfo = null;
 let currentSessionStatus = null; // latest session-status broadcast
 let lastDiagnostic = null; // latest diagnostic (drawer shows only this one)
 let pendingJoin = null;
-let mode = 'host'; // selected roleHint; NOT the granted role
-let actualRole = null; // join-accepted.role, only meaningful while connected
 let selfParticipantId = null;
 let submitLock = false; // connect is single-submission until a status frame
 let decisionLock = false; // join accept/reject is single-submission
-let fetchInFlight = false; // local Session API read in progress
 let prevStatus = 'disconnected';
 let sessionStatusSeq = 0; // event ordering: a session-status newer than the
 let diagnosticSeq = 0; // last diagnostic wins (fresh ready=true clears degraded)
@@ -211,11 +208,15 @@ function renderBanner() {
   const icon = $('status-icon');
   const label = $('status-label');
   const desc = $('status-description');
-  const primary = $('connect');
   const disconnectBtn = $('disconnect');
   const viewDiag = $('view-diagnostic');
-  const switchRole = $('switch-role');
 
+  // Disconnected (incl. errors surfaced on the connect card): no session UI
+  // at all — the connect card and its inline errors are the whole screen.
+  const showSessionUi = state !== 'disconnected';
+  $('connection-banner').hidden = !showSessionUi;
+  $('participants-section').hidden = !showSessionUi;
+  $('resource-section').hidden = !showSessionUi;
   icon.textContent = UI_ICONS[state];
   icon.className = `status-icon state-${state}`;
   icon.classList.toggle('pulse', state === 'connecting' || state === 'waiting');
@@ -223,13 +224,8 @@ function renderBanner() {
 
   let description;
   switch (state) {
-    case 'disconnected':
-      description = '选择角色并填写必要信息';
-      break;
     case 'connecting':
-      description = mode === 'client'
-        ? '已发送加入请求，等待主机审批'
-        : '请保持此窗口打开，正在完成加入';
+      description = '已发送连接请求，等待完成加入';
       break;
     case 'connected':
       description = '正在读取会话状态';
@@ -254,92 +250,30 @@ function renderBanner() {
   desc.textContent = description;
 
   const inFamily = CONNECTED_FAMILY.includes(state);
-  primary.hidden = inFamily;
-  primary.disabled = submitLock || state === 'connecting';
-  primary.textContent = state === 'error' ? '重试连接'
-    : state === 'connecting'
-      ? (mode === 'client' ? '正在连接主机…' : '连接中…')
-      : (mode === 'client' ? '加入会话' : '连接并创建会话');
-
   disconnectBtn.hidden = !inFamily;
   disconnectBtn.disabled = !inFamily;
   viewDiag.hidden = state !== 'degraded';
 
-  switchRole.hidden = true;
-  if (state === 'error') {
-    const code = rejectCodeFromError(lastErrorText);
-    if (code === 'host-required') {
-      switchRole.hidden = false;
-      switchRole.textContent = '切换为主机';
-    } else if (code === 'host-already-exists') {
-      switchRole.hidden = false;
-      switchRole.textContent = '切换为从机';
-    }
-  }
-
-  // Progressive disclosure: once connected (any healthy sub-state), the
-  // config card has no interactive value — hide it so the read-only session
-  // cards lead the popup. It returns on disconnect, error or retry.
-  $('connect-form').hidden = state === 'connected'
-    || state === 'waiting'
-    || state === 'ready'
-    || state === 'degraded';
+  // Progressive disclosure: while connected (any healthy sub-state) the
+  // connect card has no interactive value — session cards lead instead. It
+  // returns on disconnect or error.
+  $('connect-form').hidden = inFamily;
 
   applyLock();
 }
 
 function applyLock() {
   const locked = submitLock || lastStatus === 'connecting' || lastStatus === 'connected';
-  $('modehost').disabled = locked;
-  $('modeclient').disabled = locked;
   for (const id of ['server', 'port', 'session', 'participant']) $(id).disabled = locked;
-  $('localsession').disabled = locked || fetchInFlight;
-  $('parseshare').disabled = locked;
-  updateShareAvailability();
-}
-
-// --- mode / config card ------------------------------------------------------
-
-function setMode(next, skipFetch = false) {
-  const host = next === 'host';
-  mode = host ? 'host' : 'client';
-  $('modehost').checked = host;
-  $('modeclient').checked = !host;
-
-  const serverInput = $('server');
-  serverInput.readOnly = host;
-  $('label-server').textContent = host ? '服务器地址' : '主机地址';
-  $('hint-server').textContent = host
-    ? '固定连接本机伴随进程'
-    : '主机分享的地址（IP 或主机名）';
-  $('localsession').hidden = !host;
-  $('parseshare').hidden = host;
-  $('copysession').hidden = !host;
-  const sessionInput = $('session');
-  sessionInput.placeholder = host ? '本机 Session ID' : '主机分享的 Session ID';
-  if (host) {
-    serverInput.value = '127.0.0.1';
-  } else if (serverInput.value.trim() === '127.0.0.1') {
-    // Do not carry the host-only localhost default into client mode.
-    serverInput.value = '';
-  }
-  if (!host) $('share-text').textContent = '—';
-
-  clearFieldErrors();
-  $('hint-session').textContent = '';
-  if (host && !skipFetch && lastStatus !== 'connected' && !sessionInput.value.trim()) {
-    void fetchLocalSession();
-  }
-  renderBanner();
 }
 
 function validateForm(server, port, sessionId) {
-  if (mode === 'client' && !server) return { id: 'server', text: '请输入主机地址（IP 或主机名）' };
+  if (!server) return { id: 'server', text: '请输入主机地址（IP 或主机名）' };
   const portNum = Number(port);
   if (!port || !Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
     return { id: 'port', text: '端口需为 1–65535 之间的整数' };
   }
-  if (mode === 'client' && !sessionId) return { id: 'session', text: '请输入主机分享的 Session ID' };
+  if (!sessionId) return { id: 'session', text: '请输入会话 ID 或名称（或直接粘贴分享串）' };
   return null;
 }
 
@@ -356,25 +290,6 @@ function clearFieldErrors() {
     el.textContent = '';
     el.hidden = true;
   }
-}
-
-async function fetchLocalSession() {
-  if (fetchInFlight) return;
-  const port = $('port').value.trim() || '8765';
-  fetchInFlight = true;
-  $('localsession').disabled = true;
-  $('hint-session').textContent = '正在读取本机 Session…';
-  const reply = await send({ type: 'get-local-session', port });
-  fetchInFlight = false;
-  $('localsession').disabled = false;
-  if (!reply || reply.ok === false) {
-    $('hint-session').textContent = reply?.error
-      ?? '无法读取本机 Session。请确认伴随进程已启动（本机 API 端口为 WS 端口 + 1）。';
-    return;
-  }
-  $('session').value = reply.sessionId;
-  $('hint-session').textContent = '';
-  updateShareAvailability();
 }
 
 async function copyText(text) {
@@ -399,51 +314,26 @@ async function copyText(text) {
   }
 }
 
-async function copySession() {
-  const host = $('server').value.trim();
-  const port = $('port').value.trim() || '8765';
-  const sessionId = $('session').value.trim();
-  if (!sessionId) return showError('请先获取或填写 Session ID');
-  const reply = await send({ type: 'copy-session', host, port, sessionId });
-  if (!reply || reply.ok === false) return showError(reply?.error ?? '无法生成分享串');
-  $('share-text').textContent = reply.share;
-  const copied = await copyText(reply.share);
-  if (copied) showNotice('已复制，可发送给从机');
-  else showError('复制失败，请手动复制分享串');
-}
-
-async function pasteShare() {
-  let clipboardText;
-  try {
-    clipboardText = await navigator.clipboard.readText();
-  } catch {
-    showError('读取剪贴板失败，请手动粘贴到 Session ID 输入框');
-    return;
-  }
-
-  const parsed = parseShareString(clipboardText) ?? parseShareString($('session').value);
-  if (!parsed) {
-    showError('无法识别分享串，请粘贴 anytogether://session?... 格式');
-    return;
-  }
-
-  if (mode === 'host') setMode('client');
-  $('server').value = parsed.host;
-  $('port').value = String(parsed.port);
-  $('session').value = parsed.session;
-  clearFieldErrors();
-  updateShareAvailability();
-  showNotice('已解析分享串并填入连接信息');
-}
-
 async function doConnect() {
   const state = computeUiState();
   if (submitLock || state === 'connecting' || CONNECTED_FAMILY.includes(state)) return;
-  const server = $('server').value.trim();
-  const port = $('port').value.trim();
-  const sessionId = $('session').value.trim();
+
+  // Share string wins when present; otherwise fall back to the advanced
+  // fields with the built-in defaults (127.0.0.1 / 8765) from placeholders.
+  const shareText = $('share').value.trim();
+  const parsed = shareText ? parseShareString(shareText) : null;
+  if (shareText && !parsed) {
+    showFieldError({ id: 'share', text: '无法识别分享串，请粘贴完整的 anytogether:// 分享串' });
+    return;
+  }
+  const server = parsed?.host ?? $('server').value.trim() ?? '';
+  const port = String(parsed?.port ?? $('port').value.trim() ?? '');
+  const sessionId = parsed?.session ?? $('session').value.trim();
   const participantId = $('participant').value.trim();
-  const firstError = validateForm(server, port, sessionId);
+
+  const effectiveServer = server || '127.0.0.1';
+  const effectivePort = port || '8765';
+  const firstError = validateForm(effectiveServer, effectivePort, sessionId);
   if (firstError) {
     showFieldError(firstError);
     return;
@@ -453,10 +343,8 @@ async function doConnect() {
   renderBanner();
   const reply = await send({
     type: 'connect',
-    mode,
-    roleHint: mode,
-    host: server,
-    port,
+    host: effectiveServer,
+    port: effectivePort,
     sessionId,
     participantId,
   });
@@ -468,17 +356,7 @@ async function doConnect() {
   // On success the background's status frame ('connecting') owns the lock.
 }
 
-// --- status / role -----------------------------------------------------------
-
-function renderRoleBadge() {
-  const badge = $('role-badge');
-  if (actualRole) {
-    badge.textContent = `实际角色 · ${actualRole === 'host' ? '主机' : '从机'}`;
-    badge.hidden = false;
-  } else {
-    badge.hidden = true;
-  }
-}
+// --- status ------------------------------------------------------------------
 
 function renderStatus(info) {
   prevStatus = lastStatus;
@@ -488,19 +366,9 @@ function renderStatus(info) {
   localPermission = info.localPermission ?? null;
 
   if (lastStatus === 'connected') {
-    actualRole = info.role ?? null;
     selfParticipantId = info.participantId ?? null;
   } else {
-    actualRole = null;
     selfParticipantId = null;
-  }
-  renderRoleBadge();
-
-  // join-accepted.role differs from the selected hint: confirm the authority's
-  // assignment once, and never treat the radio choice as the granted role.
-  if (lastStatus === 'connected' && prevStatus !== 'connected'
-    && info.role && info.role !== info.mode) {
-    showNotice(`已按会话权威分配为${info.role === 'host' ? '主机' : '从机'}`);
   }
 
   // Reopened popup restores the worker's real target fields for a retry.
@@ -573,10 +441,6 @@ function renderParticipants() {
     idSpan.textContent = p.participantId;
     idSpan.title = p.participantId;
     name.appendChild(idSpan);
-    const rolePill = document.createElement('span');
-    rolePill.className = 'pill';
-    rolePill.textContent = p.role === 'host' ? '主机' : '从机';
-    name.appendChild(rolePill);
     if (selfParticipantId && p.participantId === selfParticipantId) {
       const selfPill = document.createElement('span');
       selfPill.className = 'pill pill-self';
@@ -619,6 +483,10 @@ function renderResourceCard() {
   empty.hidden = true;
   body.hidden = false;
   $('resource-adapter').textContent = ADAPTER_LABELS[identity.adapterId] ?? identity.adapterId;
+  // The resource's own name is the recognizable bit: a BV id, a file name —
+  // fall back to the canonical URL tail when the syncer has no resourceId.
+  $('resource-name').textContent = identity.resourceId
+    ?? (identity.canonicalUrl.split('/').pop() || identity.canonicalUrl);
   updatePlaybackFields();
 }
 
@@ -690,14 +558,31 @@ function updatePlaybackFields() {
   const phase = currentState.mediaPhase;
   const rate = Number.isFinite(currentState.playbackRate) ? currentState.playbackRate : 1;
   const phaseText = PHASE_LABELS[phase] ?? phase ?? '未知';
-  // Rate is only worth showing when it differs from normal playback speed.
-  $('resource-phase').textContent = Math.abs(rate - 1) > 1e-9
+
+  // Status pill: color mirrors the phase family, text carries the rate only
+  // when it differs from normal playback speed.
+  const pill = $('resource-phase');
+  pill.textContent = Math.abs(rate - 1) > 1e-9
     ? `${phaseText} · ${rate.toFixed(2)}×`
     : phaseText;
-  const position = formatTime(projectedPosition(currentState));
-  $('resource-position').textContent = currentState.durationSeconds == null
-    ? `${position} / 时长未知`
-    : `${position} / ${formatTime(currentState.durationSeconds)}`;
+  pill.className = phase === 'error'
+    ? 'phase-pill phase-error'
+    : phase === 'playing'
+      ? 'phase-pill phase-playing'
+      : phase === 'buffering' || phase === 'seeking' || phase === 'loading'
+        ? 'phase-pill phase-transient'
+        : 'phase-pill phase-other';
+
+  // Progress bar + time row. Unknown duration shows the time pair only.
+  const position = projectedPosition(currentState);
+  const percent = currentState.durationSeconds != null && currentState.durationSeconds > 0
+    ? Math.min(100, Math.max(0, (position / currentState.durationSeconds) * 100))
+    : 0;
+  $('resource-progress').style.width = `${percent}%`;
+  $('resource-position').textContent = formatTime(position);
+  $('resource-duration').textContent = currentState.durationSeconds == null
+    ? '时长未知'
+    : formatTime(currentState.durationSeconds);
   $('resource-error').hidden = phase !== 'error';
 }
 
@@ -706,7 +591,7 @@ function updatePlaybackFields() {
 function renderPendingJoin(join) {
   pendingJoin = join;
   const card = $('join-approval');
-  const show = !!join && lastStatus === 'connected' && actualRole === 'host';
+  const show = !!join && lastStatus === 'connected';
   card.hidden = !show;
   if (!show) return;
   $('join-requester-id').textContent = join.participantId;
@@ -837,9 +722,7 @@ function renderConnectionDetails() {
   const dl = $('connection-details');
   dl.textContent = '';
   const port = $('port').value.trim() || '8765';
-  const api = lastStatusInfo?.api
-    ?? (mode === 'host' ? `http://127.0.0.1:${Number(port) + 1}/api/session` : null);
-  addKv(dl, '实际角色', actualRole ? (actualRole === 'host' ? '主机' : '从机') : '—');
+  const api = lastStatusInfo?.api ?? null;
   addKv(dl, 'Session ID', $('session').value.trim() || '—');
   addKv(dl, '主机地址', $('server').value.trim() || '—');
   addKv(dl, '端口', port);
@@ -859,11 +742,6 @@ function renderShareText(share) {
   if (share) {
     $('share-text').textContent = share;
   }
-}
-
-function updateShareAvailability() {
-  const hasSession = !!$('session').value.trim();
-  $('copysession').disabled = !hasSession;
 }
 
 // --- secondary panel open/close ----------------------------------------------
@@ -929,7 +807,6 @@ async function init() {
       lastDiagnostic = reply.lastDiagnostic;
       diagnosticSeq = 1;
     }
-    if (reply.mode) setMode(reply.mode === 'host' ? 'host' : 'client', true);
     renderStatus(reply);
     if (reply.notice) showNotice(reply.notice);
     if (reply.pendingJoin) renderPendingJoin(reply.pendingJoin);
@@ -940,11 +817,6 @@ async function init() {
     showError('无法读取后台状态，请重新打开扩展窗口');
   }
   $('loading-state').hidden = true;
-  // Host mode with no live session and no session id yet: pull it from the
-  // local companion API so the user sees it before connecting.
-  if (mode === 'host' && lastStatus !== 'connected' && !$('session').value.trim()) {
-    void fetchLocalSession();
-  }
 }
 
 document.addEventListener('DOMContentLoaded', init);
@@ -1023,20 +895,8 @@ $('disconnect').addEventListener('click', () => {
   void send({ type: 'disconnect' });
 });
 
-$('modehost').addEventListener('change', () => setMode('host'));
-$('modeclient').addEventListener('change', () => setMode('client'));
-
 $('session').addEventListener('input', () => {
-  const parsed = parseShareString($('session').value);
-  if (parsed) {
-    if (mode === 'host') setMode('client');
-    $('server').value = parsed.host;
-    $('port').value = String(parsed.port);
-    $('session').value = parsed.session;
-    showNotice('已解析分享串并填入连接信息');
-  }
   clearFieldErrors();
-  updateShareAvailability();
 });
 
 $('server').addEventListener('input', () => {
@@ -1051,18 +911,11 @@ $('port').addEventListener('input', () => {
   el.hidden = true;
 });
 
-$('localsession').addEventListener('click', () => {
-  void fetchLocalSession();
+$('advanced-toggle').addEventListener('click', () => {
+  const fields = $('advanced-fields');
+  fields.hidden = !fields.hidden;
+  $('advanced-toggle').setAttribute('aria-expanded', String(!fields.hidden));
 });
-
-$('copysession').addEventListener('click', () => {
-  void copySession();
-});
-
-$('parseshare').addEventListener('click', () => {
-  void pasteShare();
-});
-
 
 $('joinaccept').addEventListener('click', () => {
   void sendJoinDecision(true);
@@ -1086,11 +939,6 @@ $('view-diagnostic').addEventListener('click', () => {
 
 $('open-diagnostic').addEventListener('click', () => {
   openPanel('details-diagnostic');
-});
-
-$('switch-role').addEventListener('click', () => {
-  setMode(mode === 'host' ? 'client' : 'host');
-  showNotice(mode === 'host' ? '已切换为主机模式，请重试连接' : '已切换为从机模式，请重试连接');
 });
 
 $('more-button').addEventListener('click', () => {

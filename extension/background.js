@@ -10,14 +10,12 @@
  * the socket.
  *
  * Responsibilities:
- *  - host mode: default server 127.0.0.1, auto-fetch the session from the
- *    local companion Session API (http://127.0.0.1:<wsPort+1>/api/session),
- *    derive the session resource from the current active tab and bind it on
- *    join (roleHint 'host');
- *  - client mode: join with no URL/identity and adopt the pushed resource;
- *  - either side may switch videos: a host or client page navigation to
- *    another supported video re-binds the resource via resource-bind and the
- *    other side follows in its own tab;
+ *  - connect to the CLI (the only host) through a share string or the
+ *    advanced host/port/session fields — 127.0.0.1 works the same as a LAN
+ *    address, so there is no host/client mode in the extension;
+ *  - either side may switch videos: a page navigation to another supported
+ *    video re-binds the resource via resource-bind and the other side follows
+ *    in its own tab;
  *  - surface pending join requests to the host popup and relay its decision;
  *  - wrap content-script observations (host tab AND client tab) into
  *    ActualStateReport messages — native player content events are the only
@@ -43,8 +41,6 @@ const SESSION = {
   status: 'disconnected', // disconnected | connecting | connected | error
   ws: null,
   keepalive: null,
-  mode: null, // 'host' | 'client' — popup-selected mode (roleHint); the authority
-  // still assigns roles and echoes the decision in join-accepted.role
   host: '',
   port: 0,
   sessionId: '',
@@ -207,35 +203,6 @@ function buildShare(host, port, sessionId) {
   return `anytogether://session?host=${encodeURIComponent(host)}&port=${Number(port)}&session=${encodeURIComponent(sessionId)}`;
 }
 
-/**
- * Read the local companion Session API. The companion binds the API to
- * 127.0.0.1 on wsPort + 1, so the fetch never leaves the machine.
- */
-async function fetchLocalSession(host, port) {
-  const apiPort = Number(port) + 1;
-  try {
-    const response = await fetch(`http://127.0.0.1:${apiPort}/api/session`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const info = await response.json();
-    if (!info || typeof info !== 'object' || typeof info.sessionId !== 'string' || info.sessionId.length === 0) {
-      return { ok: false, error: '本机 API 未返回有效的 Session 信息' };
-    }
-    return {
-      ok: true,
-      sessionId: info.sessionId,
-      wsPort: Number(info.wsPort),
-      apiPort: Number(info.apiPort),
-      bound: info.bound === true,
-      resourceIdentity: info.resourceIdentity ?? null,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      error: `无法从本机 API 获取 Session（请确认伴随进程已启动，${host}:${apiPort}）: ${error instanceof Error ? error.message : String(error)}`,
-    };
-  }
-}
-
 // --- popup notification ------------------------------------------------------
 
 function notifyPopup(message) {
@@ -251,14 +218,13 @@ function setStatus(status) {
   notifyPopup({
     type: 'status',
     status,
-    mode: SESSION.mode,
     role: SESSION.role,
     sessionId: SESSION.sessionId,
     session: SESSION.sessionId,
     participantId: SESSION.participantId,
     host: SESSION.host,
     port: SESSION.port,
-    api: SESSION.mode === 'host' && SESSION.port > 0
+    api: SESSION.port > 0
       ? `http://127.0.0.1:${SESSION.port + 1}/api/session`
       : null,
     share: SESSION.host && SESSION.sessionId
@@ -290,7 +256,9 @@ async function connect(options) {
   // Reaching this point the session is disconnected or errored: reset any
   // leftover socket state (disconnect() is idempotent) and build fresh.
   disconnect();
-  const mode = options.mode === 'host' ? 'host' : 'client';
+  // Every extension is the same kind of client — the CLI is the only host.
+  // A CLI on THIS machine is still reached through the loopback address, so
+  // there is no host/client mode: just an address, a port and a session.
   let host = String(options.host ?? '').trim().replace(/^wss?:\/\//, '');
   let port = Number(options.port);
   // An inline `host:port` in the address field wins over the separate port
@@ -302,64 +270,32 @@ async function connect(options) {
     port = Number(inline[2]);
   }
   host = host.replace(/\/+$/, '');
+  if (!host) host = '127.0.0.1';
   if (!Number.isInteger(port) || port < 1 || port > 65535) port = DEFAULT_PORT;
-  // Host mode is local by definition: the popup shows 127.0.0.1 read-only, and
-  // an empty address falls back to localhost here too.
-  if (!host && mode === 'host') host = '127.0.0.1';
-  if (!host) return { ok: false, error: '缺少服务器地址' };
 
-  let sessionId = String(options.sessionId ?? '').trim();
-  if (!sessionId && mode === 'client') return { ok: false, error: '缺少 Session ID' };
+  const sessionId = String(options.sessionId ?? '').trim();
+  if (!sessionId) return { ok: false, error: '缺少会话 ID 或分享串' };
 
   // Claim connecting BEFORE the first await: a second connect message is then
-  // rejected synchronously above and can never slip into the async fetch below
-  // to duplicate or replace this attempt. The popup is notified with the full
-  // target fields once the session id is resolved.
+  // rejected synchronously above and can never slip in to duplicate this
+  // attempt.
   SESSION.status = 'connecting';
-  SESSION.mode = mode;
   SESSION.host = host;
   SESSION.port = port;
   SESSION.lastError = null;
   SESSION.notice = null;
   SESSION.pendingJoin = null;
-
-  if (!sessionId && mode === 'host') {
-    // Auto-fetch the real session from the local companion API.
-    const local = await fetchLocalSession(host, port);
-    // A disconnect during the fetch aborts this attempt: never resume a
-    // cancelled connection.
-    if (SESSION.status !== 'connecting') return { ok: false, error: '连接已取消' };
-    if (!local.ok) {
-      // A failed attempt must not park the session in connecting forever:
-      // report it as a terminal error the user can retry from.
-      SESSION.lastError = local.error;
-      setStatus('error');
-      return local;
-    }
-    sessionId = local.sessionId;
-  }
   SESSION.sessionId = sessionId;
 
   const participantId = String(options.participantId ?? '').trim()
     || `browser-${Math.random().toString(36).slice(2, 10)}`;
-  // Only the host binds a resource: derive it from the current active tab.
-  // A client never sends a URL/identity — it adopts the pushed resource.
-  let identity = null;
-  let hostTabId = null;
-  if (mode === 'host') {
-    try {
-      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs && tabs[0];
-      if (tab && typeof tab.id === 'number') hostTabId = tab.id;
-      identity = tab && typeof tab.url === 'string' ? IDENTITY.deriveIdentity(tab.url) : null;
-    } catch {
-      // No tab context (background-only invocation); join identity-less.
-    }
-    if (SESSION.status !== 'connecting') return { ok: false, error: '连接已取消' };
-  }
 
   SESSION.participantId = participantId;
-  SESSION.hostTabId = hostTabId;
+  // The first joiner becomes the session's protocol host regardless of which
+  // machine it sits on — the CLI (authority) is the real host. The joining
+  // extension therefore never declares a roleHint: the legacy first-come rule
+  // assigns roles with no mode switch anywhere in the UI.
+  SESSION.hostTabId = null;
   // The authority is authoritative about the resource: SESSION.identity is
   // adopted from join-accepted (or a later resource-bind state), not here.
   SESSION.identity = null;
@@ -380,10 +316,7 @@ async function connect(options) {
     const join = {
       type: 'join',
       participantId: SESSION.participantId,
-      roleHint: mode,
     };
-    // First host join with an identity binds an unbound session server-side.
-    if (identity) join.resourceIdentity = identity;
     ws.send(JSON.stringify(join));
   });
 
@@ -393,7 +326,8 @@ async function connect(options) {
 
   ws.addEventListener('error', () => {
     if (SESSION.ws !== ws) return;
-    SESSION.lastError = SESSION.lastError ?? '无法连接到服务器，请检查地址和端口';
+    SESSION.lastError = SESSION.lastError
+      ?? '无法连接到服务器，请核对地址与端口（公网部署需在服务器防火墙放行该端口）';
     setStatus('error');
   });
 
@@ -1163,34 +1097,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(handleLocalPermissionResult(origin, message.granted === true));
       return undefined;
     }
-    case 'get-local-session': {
-      // Popup helper: read the local companion Session API (host mode
-      // auto-fetch, client mode same-machine fill). Always 127.0.0.1 — the
-      // companion API never binds a remote interface.
-      const port = Number(message.port) || SESSION.port || DEFAULT_PORT;
-      void fetchLocalSession('127.0.0.1', port).then((result) => {
-        if (result.ok) {
-          result.host = '127.0.0.1';
-          result.port = port;
-          result.share = buildShare('127.0.0.1', port, result.sessionId);
-        }
-        sendResponse(result);
-      });
-      return true;
-    }
-    case 'copy-session': {
-      // Popup helper: the share string for the copy button. The popup passes
-      // the field values it has; live session values back them up.
-      const host = String(message.host ?? '').trim() || SESSION.host;
-      const port = Number(message.port) || SESSION.port || DEFAULT_PORT;
-      const sessionId = String(message.sessionId ?? '').trim() || SESSION.sessionId;
-      if (!host || !sessionId) {
-        sendResponse({ ok: false, error: '请先获取或填写 Session ID' });
-        return undefined;
-      }
-      sendResponse({ ok: true, share: buildShare(host, port, sessionId) });
-      return undefined;
-    }
     case 'join-decision': {
       if (SESSION.status !== 'connected' || !SESSION.ws) {
         sendResponse({ ok: false, error: '未连接会话' });
@@ -1213,14 +1119,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'get-status':
       sendResponse({
         status: SESSION.status,
-        mode: SESSION.mode,
         role: SESSION.role,
         sessionId: SESSION.sessionId,
         session: SESSION.sessionId,
         participantId: SESSION.participantId,
         host: SESSION.host,
         port: SESSION.port,
-        api: SESSION.mode === 'host' && SESSION.port > 0
+        api: SESSION.port > 0
           ? `http://127.0.0.1:${SESSION.port + 1}/api/session`
           : null,
         share: SESSION.host && SESSION.sessionId

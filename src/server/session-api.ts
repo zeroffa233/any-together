@@ -19,6 +19,7 @@ export type SessionApiOptions = {
 
 export type SessionInfo = {
   sessionId: string;
+  sessionName?: string;
   wsHost: '127.0.0.1';
   wsPort: number;
   apiPort: number;
@@ -126,6 +127,7 @@ export class SessionApi {
     const state = this.authority.getState();
     return {
       sessionId: state.sessionId,
+      ...(this.authority.sessionAlias === undefined ? {} : { sessionName: this.authority.sessionAlias }),
       wsHost: '127.0.0.1',
       wsPort: this.wsPort,
       apiPort: this.port,

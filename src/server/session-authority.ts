@@ -61,6 +61,13 @@ export type AuthorityOptions = {
    * false so the creator authority always approves joins.
    */
   autoAcceptJoins?: boolean;
+  /**
+   * Optional human-readable session alias (no whitespace). Joins may address
+   * the session by name OR by id — the two are interchangeable on the wire.
+   * One CLI process serves exactly one session, so the name is unique there
+   * by construction; emptiness/whitespace is rejected at construction.
+   */
+  sessionName?: string;
 };
 
 type Participant = {
@@ -134,8 +141,11 @@ export class SessionAuthority {
   private readonly host: string;
   private readonly port: number;
   private readonly sessionId: string;
+  private readonly sessionName: string | undefined;
   private readonly durationSeconds: number | null;
   private readonly autoAcceptJoins: boolean;
+  /** Human-readable alias when configured; undefined when the session is id-only. */
+  readonly sessionAlias: string | undefined;
   private readonly participants = new Map<WebSocket, Participant>();
   /** Latest actual-state report per joined participant, keyed by socket. */
   private readonly reports = new Map<WebSocket, ParticipantReport>();
@@ -153,7 +163,15 @@ export class SessionAuthority {
     this.host = options.host ?? '0.0.0.0';
     this.port = options.port ?? 0;
     this.sessionId = options.sessionId ?? randomUUID();
+    if (options.sessionName !== undefined) {
+      const name = options.sessionName.trim();
+      if (name.length === 0 || /\s/.test(name)) {
+        throw new Error(`Invalid session name ${JSON.stringify(options.sessionName)} (must be non-empty without whitespace)`);
+      }
+      this.sessionName = name;
+    }
     this.autoAcceptJoins = options.autoAcceptJoins ?? false;
+    this.sessionAlias = this.sessionName;
     this.durationSeconds = options.durationSeconds ?? null;
     this.state = createInitialPlaybackState(
       this.sessionId,
@@ -165,7 +183,7 @@ export class SessionAuthority {
     );
   }
 
-  async start(): Promise<{ host: string; port: number; sessionId: string }> {
+  async start(): Promise<{ host: string; port: number; sessionId: string; sessionName?: string }> {
     if (this.server) throw new Error('Session authority is already running');
     const server = new WebSocketServer({ host: this.host, port: this.port });
     server.on('connection', (socket) => this.handleConnection(socket));
@@ -201,7 +219,12 @@ export class SessionAuthority {
     }
     this.server = server;
     // port may be 0 (ephemeral): report the actually bound port.
-    return { host: this.host, port: address.port, sessionId: this.sessionId };
+    return {
+      host: this.host,
+      port: address.port,
+      sessionId: this.sessionId,
+      ...(this.sessionAlias === undefined ? {} : { sessionName: this.sessionAlias }),
+    };
   }
 
   async stop(): Promise<void> {
@@ -605,6 +628,15 @@ export class SessionAuthority {
     }
   }
 
+  /**
+   * True when a wire message addresses THIS session by id or (when configured)
+   * by its human-readable name — the two are interchangeable.
+   */
+  private acceptsSessionId(sessionId: string): boolean {
+    return sessionId === this.sessionId
+      || (this.sessionName !== undefined && sessionId === this.sessionName);
+  }
+
   private handleSyncItemBind(socket: WebSocket, message: SyncItemBindMessage): void {
     const participant = this.participants.get(socket);
     if (!participant || participant.id !== message.participantId) {
@@ -641,7 +673,7 @@ export class SessionAuthority {
 
   private handleSyncItemIntent(socket: WebSocket, intent: SyncItemIntent): void {
     const participant = this.participants.get(socket);
-    if (!participant || participant.id !== intent.participantId || intent.sessionId !== this.sessionId) {
+    if (!participant || participant.id !== intent.participantId || !this.acceptsSessionId(intent.sessionId)) {
       this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
       return;
     }
@@ -670,7 +702,7 @@ export class SessionAuthority {
 
   private handleIntent(socket: WebSocket, intent: PlaybackIntent): void {
     const participant = this.participants.get(socket);
-    if (!participant || participant.id !== intent.participantId || intent.sessionId !== this.sessionId) {
+    if (!participant || participant.id !== intent.participantId || !this.acceptsSessionId(intent.sessionId)) {
       this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
       return;
     }
@@ -691,7 +723,13 @@ export class SessionAuthority {
     }
 
     try {
-      const nextState = applyIntent(this.state, intent, Date.now());
+      // The state machine compares intent.sessionId against state.sessionId
+      // (the real id); a joiner addressing the session by NAME passes the
+      // acceptsSessionId gate above, so normalize before applying.
+      const wireIntent = intent.sessionId === this.sessionId
+        ? intent
+        : { ...intent, sessionId: this.sessionId };
+      const nextState = applyIntent(this.state, wireIntent, Date.now());
       this.processedCommands.add(intent.commandId);
       this.state = nextState;
       this.broadcast({ type: 'state', state: this.getState() });
@@ -722,7 +760,7 @@ export class SessionAuthority {
       this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
       return;
     }
-    if (report.sessionId !== this.sessionId) {
+    if (!this.acceptsSessionId(report.sessionId)) {
       this.send(socket, { type: 'error', code: 'session-mismatch', message: 'Actual state report belongs to another session' });
       return;
     }

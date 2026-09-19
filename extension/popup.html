@@ -77,15 +77,80 @@
       font-weight: 600;
     }
 
-    .role-badge {
-      margin-left: auto;
+    /* --- resource status card ------------------------------------------------ */
+
+    .resource-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-2);
+      margin-bottom: var(--space-2);
+    }
+
+    .phase-pill {
       font-size: 12px;
       font-weight: 600;
-      color: var(--color-surface);
-      background: var(--color-accent-strong);
-      padding: var(--space-1) var(--space-3);
+      padding: 2px var(--space-3);
       border-radius: var(--radius-pill);
+      border: 1px solid var(--color-border);
+      color: var(--color-text-muted);
+      background: var(--color-surface-muted);
       white-space: nowrap;
+    }
+
+    .phase-playing {
+      color: var(--color-positive);
+      border-color: var(--color-positive);
+      background: var(--color-surface-positive);
+    }
+
+    .phase-transient {
+      color: var(--color-warning);
+      border-color: var(--color-warning);
+      background: var(--color-surface-warning);
+    }
+
+    .phase-error {
+      color: var(--color-danger);
+      border-color: var(--color-danger);
+      background: var(--color-surface-danger);
+    }
+
+    .resource-name {
+      font-size: 13px;
+      font-weight: 600;
+      word-break: break-all;
+      margin-bottom: var(--space-2);
+    }
+
+    .progress-track {
+      height: 6px;
+      border-radius: var(--radius-pill);
+      background: var(--color-surface-muted);
+      border: 1px solid var(--color-border);
+      overflow: hidden;
+    }
+
+    .progress-fill {
+      height: 100%;
+      width: 0;
+      border-radius: var(--radius-pill);
+      background: var(--color-accent);
+      transition: width 0.4s linear;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .progress-fill {
+        transition: none;
+      }
+    }
+
+    .progress-times {
+      display: flex;
+      justify-content: space-between;
+      margin-top: var(--space-1);
+      font-size: 12px;
+      color: var(--color-text-muted);
     }
 
     .icon-button {
@@ -752,7 +817,6 @@
 <body>
   <header class="header">
     <h1 class="brand">AnyTogether</h1>
-    <span id="role-badge" class="role-badge" hidden>实际角色 · —</span>
     <button id="more-button" class="icon-button" type="button" aria-label="更多设置"
       aria-expanded="false" aria-controls="secondary-panel" title="更多设置">⋯</button>
   </header>
@@ -761,50 +825,46 @@
 
   <main id="popup-main">
     <form id="connect-form" class="card" novalidate>
-      <fieldset class="role-group">
-        <legend>模式</legend>
-        <label class="radio"><input type="radio" name="mode" id="modehost" value="host" checked><span>主机</span></label>
-        <label class="radio"><input type="radio" name="mode" id="modeclient" value="client"><span>从机</span></label>
-      </fieldset>
-
       <div class="field">
-        <label for="server" id="label-server">服务器地址</label>
-        <input type="text" id="server" value="127.0.0.1" readonly autocomplete="off" spellcheck="false">
-        <p class="field-hint" id="hint-server">固定连接本机伴随进程</p>
-        <p class="field-error" id="err-server" role="alert" hidden></p>
-      </div>
-
-      <div class="field">
-        <label for="port">端口</label>
-        <input type="number" id="port" value="8765" min="1" max="65535" inputmode="numeric">
-        <p class="field-hint" id="hint-port">默认 8765</p>
-        <p class="field-error" id="err-port" role="alert" hidden></p>
-      </div>
-
-      <div class="field">
-        <label for="session">Session ID</label>
+        <label for="share">分享串</label>
         <div class="input-group">
-          <input type="text" id="session" autocomplete="off" spellcheck="false">
-          <button type="button" id="localsession" class="mini" hidden>本机获取</button>
-          <button type="button" id="parseshare" class="mini" hidden>粘贴分享</button>
-          <button type="button" id="copysession" class="mini" hidden disabled>复制分享</button>
+          <input type="text" id="share" placeholder="粘贴 anytogether:// 分享串" autocomplete="off" spellcheck="false">
+          <button type="submit" id="connect" class="primary">连接</button>
         </div>
-        <p class="field-hint" id="hint-session"></p>
-        <p class="field-error" id="err-session" role="alert" hidden></p>
+        <p class="field-hint" id="hint-share">整段复制粘贴，一键解析并加入</p>
+        <p class="field-error" id="err-share" role="alert" hidden></p>
+      </div>
+
+      <button type="button" id="advanced-toggle" class="link-button" aria-expanded="false" aria-controls="advanced-fields">高级配置</button>
+      <div id="advanced-fields" hidden>
+        <div class="field">
+          <label for="server">地址</label>
+          <input type="text" id="server" placeholder="127.0.0.1" autocomplete="off" spellcheck="false">
+          <p class="field-error" id="err-server" role="alert" hidden></p>
+        </div>
+        <div class="field">
+          <label for="port">端口</label>
+          <input type="number" id="port" placeholder="8765" min="1" max="65535" inputmode="numeric">
+          <p class="field-error" id="err-port" role="alert" hidden></p>
+        </div>
+        <div class="field">
+          <label for="session">会话</label>
+          <input type="text" id="session" placeholder="会话 ID 或名称" autocomplete="off" spellcheck="false">
+          <p class="field-error" id="err-session" role="alert" hidden></p>
+        </div>
+        <p class="field-hint">分享串已包含以上信息；仅在没有分享串时手动填写，留空使用默认值。</p>
       </div>
     </form>
 
-    <section id="connection-banner" class="card banner" role="status" aria-live="polite" aria-atomic="true">
+    <section id="connection-banner" class="card banner" role="status" aria-live="polite" aria-atomic="true" hidden>
       <span id="status-icon" class="status-icon state-disconnected" aria-hidden="true">—</span>
       <div class="status-text">
         <strong id="status-label" class="status-label">未连接</strong>
-        <span id="status-description" class="status-description">选择角色并填写必要信息</span>
+        <span id="status-description" class="status-description"></span>
       </div>
       <div class="banner-actions">
-        <button id="connect" type="button" class="primary">连接并创建会话</button>
         <button id="disconnect" type="button" class="danger" hidden>断开</button>
         <button id="view-diagnostic" type="button" class="secondary" hidden>查看诊断</button>
-        <button id="switch-role" type="button" class="secondary" hidden></button>
       </div>
     </section>
 
@@ -835,29 +895,31 @@
       </div>
     </section>
 
-    <section class="card" aria-labelledby="participants-title">
+    <section id="participants-section" class="card" aria-labelledby="participants-title" hidden>
       <h2 id="participants-title" class="card-title">参与者（<span id="participants-count">0</span>/2）</h2>
       <ul id="participant-list" class="participant-list"></ul>
       <p id="participants-placeholder" class="placeholder">连接后显示参与者</p>
     </section>
 
-    <section class="card" aria-labelledby="resource-title">
+    <section id="resource-section" class="card" aria-labelledby="resource-title" hidden>
       <h2 id="resource-title" class="card-title">当前资源</h2>
       <p id="resource-empty" class="placeholder">尚未绑定资源。主机请在支持的视频页打开或刷新；从机将等待主机共享资源。</p>
       <div id="resource-body" hidden>
-        <dl class="kv">
-          <dt>站点</dt>
-          <dd id="resource-adapter">—</dd>
-          <dt>状态</dt>
-          <dd id="resource-phase">—</dd>
-          <dt>位置</dt>
-          <dd id="resource-position" class="tabular">—</dd>
-        </dl>
+        <div class="resource-head">
+          <span id="resource-adapter" class="pill">—</span>
+          <span id="resource-phase" class="phase-pill phase-other">—</span>
+        </div>
+        <div id="resource-name" class="resource-name selectable">—</div>
+        <div class="progress-track" aria-hidden="true"><div id="resource-progress" class="progress-fill"></div></div>
+        <div class="progress-times tabular">
+          <span id="resource-position">—</span>
+          <span id="resource-duration">—</span>
+        </div>
         <p id="resource-error" class="resource-error" hidden>
           <span id="resource-error-text">媒体状态错误，请返回视频页检查。</span>
           <button id="open-diagnostic" type="button" class="link-button">打开诊断</button>
         </p>
-        <p class="hint">请在视频页用原生播放器控制播放。</p>
+        <p class="hint">播放控制请使用视频页原生播放器。</p>
       </div>
     </section>
 
