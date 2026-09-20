@@ -11,14 +11,6 @@ const CONFIG_PATH = join(ROOT, 'any-together.config.json');
 const EXTENSION_SOURCE = join(ROOT, 'extension');
 const EXTENSION_DIR = join(ROOT, '.any-together', 'extension');
 const DEFAULTS = {
-  host: {
-    port: 8765,
-    autoAccept: false,
-    sessionId: '',
-    resourceUrl: '',
-    share: '',
-    mediaPort: null,
-  },
   extension: {
     browser: 'auto',
     profileDir: '.any-together/browser-profile',
@@ -26,7 +18,7 @@ const DEFAULTS = {
 };
 
 function printHelp() {
-  console.log(`AnyTogether 外围工具\n\n用法:\n  npm run setup                         一键准备环境、配置和扩展\n  npm run doctor                        检查环境与项目状态\n  npm run config                        创建或检查本地配置\n  npm run start                         按配置启动 host\n  npm run extension:prepare             准备浏览器扩展目录\n  npm run extension:install             准备扩展并启动独立浏览器配置\n\n常用参数:\n  --config <path>                       使用指定 JSON 配置\n  --browser <auto|chrome|chromium|brave|path>\n                                        指定扩展安装时使用的浏览器\n  --dry-run                             只打印扩展安装动作，不启动浏览器\n\n启动覆盖参数:\n  npm run start -- --port 9000\n  npm run start -- --resource https://www.bilibili.com/video/BV...\n  npm run start -- --share /absolute/path/movie.mp4\n`);
+  console.log(`AnyTogether 外围工具\n\n用法:\n  npm run setup                         一键准备环境、配置和扩展\n  npm run doctor                        检查环境与项目状态\n  npm run config                        创建或检查本地工具配置\n  npm run start                         启动 host（自动读取当前目录唯一的 .yml）\n  npm run extension:prepare             准备浏览器扩展目录\n  npm run extension:install             准备扩展并启动独立浏览器配置\n\n常用参数:\n  --config <path>                       使用指定 JSON 工具配置\n  --host-config <path>                  启动时使用指定 .yml 运行配置\n  --browser <auto|chrome|chromium|brave|path>\n                                        指定扩展安装时使用的浏览器\n  --dry-run                             只打印扩展安装动作，不启动浏览器\n\n启动覆盖参数（优先于 .yml）:\n  npm run start -- --port 9000\n  npm run start -- --resource https://www.bilibili.com/video/BV...\n  npm run start -- --share /absolute/path/movie.mp4\n`);
 }
 
 function fail(message) {
@@ -67,10 +59,8 @@ async function readJson(filePath) {
 }
 
 function mergeConfig(value) {
-  const host = value?.host && typeof value.host === 'object' ? value.host : {};
   const extension = value?.extension && typeof value.extension === 'object' ? value.extension : {};
   return {
-    host: { ...DEFAULTS.host, ...host },
     extension: { ...DEFAULTS.extension, ...extension },
   };
 }
@@ -94,29 +84,14 @@ async function ensureConfig(configPath = CONFIG_PATH) {
   return true;
 }
 
-function checkPort(name, value, allowNull = false) {
-  if (allowNull && value === null) return;
-  if (!Number.isInteger(value) || value < 0 || value > 65535) {
-    throw new Error(`${name} 必须是 0-65535 的整数${allowNull ? '或 null' : ''}`);
-  }
-}
-
 function validateConfig(config) {
-  const host = config.host;
   const extension = config.extension;
-  checkPort('host.port', host.port);
-  checkPort('host.mediaPort', host.mediaPort, true);
-  if (typeof host.autoAccept !== 'boolean') throw new Error('host.autoAccept 必须是布尔值');
   for (const [name, value] of Object.entries({
-    'host.sessionId': host.sessionId,
-    'host.resourceUrl': host.resourceUrl,
-    'host.share': host.share,
     'extension.browser': extension.browser,
     'extension.profileDir': extension.profileDir,
   })) {
     if (typeof value !== 'string') throw new Error(`${name} 必须是字符串`);
   }
-  if (host.share && host.resourceUrl) throw new Error('host.share 与 host.resourceUrl 不能同时设置');
 }
 
 function resolveFromRoot(value) {
@@ -202,19 +177,21 @@ async function installExtension(config, browserOverride, dryRun) {
   return true;
 }
 
-function hostArgs(config, overrides) {
-  const host = { ...config.host, ...overrides };
-  const args = [String(host.port)];
-  if (host.resourceUrl) args.push(host.resourceUrl);
-  if (host.sessionId) args.push('--session-id', host.sessionId);
-  if (host.autoAccept) args.push('--auto-accept');
-  if (host.share) args.push('--share', resolveFromRoot(host.share));
-  if (host.mediaPort !== null && host.mediaPort !== undefined) args.push('--media-port', String(host.mediaPort));
+function hostArgs(overrides) {
+  const args = [];
+  if (Object.hasOwn(overrides, 'port')) args.push('--port', String(overrides.port));
+  if (Object.hasOwn(overrides, 'resourceUrl')) args.push('--resource', overrides.resourceUrl);
+  if (Object.hasOwn(overrides, 'sessionId')) args.push('--session-id', overrides.sessionId);
+  if (Object.hasOwn(overrides, 'autoAccept')) {
+    args.push(overrides.autoAccept ? '--auto-accept' : '--no-auto-accept');
+  }
+  if (Object.hasOwn(overrides, 'share')) args.push('--share', resolveFromRoot(overrides.share));
+  if (Object.hasOwn(overrides, 'mediaPort')) args.push('--media-port', String(overrides.mediaPort));
   return args;
 }
 
 function parseArgs(args) {
-  const options = { configPath: CONFIG_PATH, browser: undefined, dryRun: false, overrides: {}, passthrough: [] };
+  const options = { configPath: CONFIG_PATH, hostConfigPath: undefined, browser: undefined, dryRun: false, overrides: {}, passthrough: [] };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === '--') {
@@ -225,6 +202,8 @@ function parseArgs(args) {
     const valueOf = (name) => arg === name ? next : arg.startsWith(`${name}=`) ? arg.slice(name.length + 1) : undefined;
     const configPath = valueOf('--config');
     if (configPath !== undefined) { options.configPath = resolveFromRoot(configPath); index += arg === '--config' ? 1 : 0; continue; }
+    const hostConfigPath = valueOf('--host-config');
+    if (hostConfigPath !== undefined) { options.hostConfigPath = resolveFromRoot(hostConfigPath); index += arg === '--host-config' ? 1 : 0; continue; }
     const browser = valueOf('--browser');
     if (browser !== undefined) { options.browser = browser; index += arg === '--browser' ? 1 : 0; continue; }
     if (arg === '--dry-run') { options.dryRun = true; continue; }
@@ -237,6 +216,7 @@ function parseArgs(args) {
     const mediaPort = valueOf('--media-port');
     if (mediaPort !== undefined) { options.overrides.mediaPort = Number(mediaPort); index += arg === '--media-port' ? 1 : 0; continue; }
     if (arg === '--auto-accept') { options.overrides.autoAccept = true; continue; }
+    if (arg === '--no-auto-accept') { options.overrides.autoAccept = false; continue; }
     const sessionId = valueOf('--session-id');
     if (sessionId !== undefined) { options.overrides.sessionId = sessionId; index += arg === '--session-id' ? 1 : 0; continue; }
     options.passthrough.push(arg);
@@ -308,8 +288,12 @@ async function main() {
     }
     if (command === 'start') {
       const config = await loadConfig(options.configPath);
-      validateConfig({ ...config.value, host: { ...config.value.host, ...options.overrides } });
-      const args = [...hostArgs(config.value, options.overrides), ...options.passthrough];
+      validateConfig(config.value);
+      const args = [
+        ...hostArgs(options.overrides),
+        ...(options.hostConfigPath === undefined ? [] : ['--config', options.hostConfigPath]),
+        ...options.passthrough,
+      ];
       const status = run(npmCommand(), ['run', 'start:host', '--', ...args]);
       process.exitCode = status;
       return;

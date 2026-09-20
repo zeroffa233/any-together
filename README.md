@@ -15,7 +15,7 @@ AnyTogether 是一个面向熟人双人场景的自托管同步工具。Node.js 
 项目以局域网为主要使用环境。CLI 也能部署在公网服务器，但 AnyTogether 不提供 TLS、账号、云中继或内置认证；异地组网和传输加密需要由使用者通过可信 VPN、隧道或其他网络层解决。
 
 > [!IMPORTANT]
-> 当前代码按生产标准演进，但首个 GitHub Release 尚未发布。维护者本地的 246 项自动化测试已全部通过；`tests/` 不随公开仓库分发。维护者已实际验证网页视频双端同步、arXiv PDF、断线与页面切换恢复、公网服务器连接；本地视频的真实双设备验收仍是 TODO。
+> 当前代码按生产标准演进，但首个 GitHub Release 尚未发布。维护者本地的 250 项自动化测试已全部通过；`tests/` 不随公开仓库分发。维护者已实际验证网页视频双端同步、arXiv PDF、断线与页面切换恢复、公网服务器连接；本地视频的真实双设备验收仍是 TODO。
 
 <p align="center">
   <img src="docs/images/popup-connect.png" alt="AnyTogether 扩展的分享串连接界面" width="360">
@@ -119,6 +119,15 @@ $ ./any-together.sh --port 8765 --name movie-night
 ```console
 $ npm run start -- --port 8765 --name movie-night
 ```
+
+也可以把运行参数写进当前目录唯一的 `.yml` 文件：
+
+```console
+$ cp config/any-together.example.yml any-together.yml
+$ ./any-together.sh
+```
+
+每个字段都按“命令行参数 > `.yml` > 内置默认值”解析。当前目录出现多个 `.yml` 时程序会拒绝猜测；使用 `--config <path.yml>` 明确选择，或通过 npm 包装器传入 `--host-config <path.yml>`。
 
 会话 ID 默认使用随机 UUID。`--name` 是不含空白的易读别名。CLI 启动后会打印完整分享串：
 
@@ -231,18 +240,31 @@ flowchart LR
 
 ## 配置
 
-根目录本地配置使用 [`config/any-together.config.schema.json`](config/any-together.config.schema.json) 校验，示例见 [`config/any-together.config.example.json`](config/any-together.config.example.json)。
+主机运行配置使用当前目录唯一的 `.yml` 文件。根目录 `.yml` 已被 `.gitignore` 忽略；可复制 [`config/any-together.example.yml`](config/any-together.example.yml) 开始配置。相对 `share` 路径以 YAML 文件所在目录为基准。
 
-| 配置 | 默认值 | 说明 |
+```yaml
+port: 8765
+name: movie-night
+autoAccept: false
+# sessionId: fixed-session-id
+# resource: https://www.bilibili.com/video/BV...
+# share: ./movie.mp4
+# mediaPort: 8767
+```
+
+| YAML 字段 | 默认值 | 说明 |
 |---|---:|---|
-| `host.port` | `8765` | WebSocket 端口；`0` 表示临时端口 |
-| `host.autoAccept` | `false` | 自动接受第二位参与者，只用于自动冒烟 |
-| `host.sessionId` | `""` | 空值时生成 UUID，也可以固定 ID |
-| `host.resourceUrl` | `""` | 可选初始 Bilibili URL |
-| `host.share` | `""` | 可选本地视频路径，与 `resourceUrl` 互斥 |
-| `host.mediaPort` | `null` | 本地视频端口；空值时使用 WebSocket 端口加 2 |
-| `extension.browser` | `"auto"` | `auto`、`chrome`、`chromium`、`brave` 或浏览器路径 |
-| `extension.profileDir` | `.any-together/browser-profile` | 自动启动扩展时使用的独立浏览器配置目录 |
+| `port` | `8765` | WebSocket 端口；`0` 表示临时端口 |
+| `name` | 未设置 | 不含空白的会话别名 |
+| `sessionId` | 随机 UUID | 可选固定 Session ID |
+| `autoAccept` | `false` | 自动接受第二位参与者，只建议自动冒烟使用 |
+| `resource` | 未设置 | 可选初始受支持资源 URL，与 `share` 互斥 |
+| `share` | 未设置 | 可选本地视频路径，与 `resource` 互斥 |
+| `mediaPort` | `port + 2` | 本地视频端口；要求同时设置 `share`，`0` 表示临时端口 |
+
+命令行支持同名参数：`--port`、`--name`、`--session-id`、`--auto-accept`、`--no-auto-accept`、`--resource`、`--share` 和 `--media-port`。未知 YAML 字段、错误类型、多个 `.yml`、`resource`/`share` 同时存在都会在启动前报错。
+
+[`any-together.config.json`](config/any-together.config.example.json) 只保存扩展安装工具设置，使用 [`config/any-together.config.schema.json`](config/any-together.config.schema.json) 校验；它不再承载主机运行参数。
 
 常用命令：
 
@@ -250,10 +272,10 @@ flowchart LR
 |---|---|
 | `npm run setup` | 安装依赖、构建、创建配置并准备扩展 |
 | `npm run doctor` | 检查环境、配置和扩展文件 |
-| `npm run config` | 创建或验证本地配置 |
+| `npm run config` | 创建或验证本地扩展工具配置 |
 | `npm run extension:prepare` | 准备可加载的扩展目录 |
 | `npm run extension:install` | 准备扩展并启动独立浏览器配置 |
-| `npm run start` | 按配置启动伴随进程，可在 `--` 后覆盖参数 |
+| `npm run start` | 读取当前目录 `.yml` 并启动伴随进程，可在 `--` 后覆盖参数 |
 | `npm run smoke:lan` | 运行同进程双客户端 WebSocket 冒烟 |
 | `npm run smoke:process` | 运行独立 host/client 进程冒烟 |
 

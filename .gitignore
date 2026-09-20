@@ -8,6 +8,7 @@ coverage/
 # Local AnyTogether runtime state
 .any-together/
 any-together.config.json
+/*.yml
 
 # Local environment and logs
 .env

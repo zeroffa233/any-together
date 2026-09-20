@@ -1,0 +1,15 @@
+# Copy this file to the directory where the host runs and choose any .yml name.
+# The host auto-loads the only .yml file in that directory.
+port: 8765
+name: movie-night
+autoAccept: false
+
+# Optional fixed session ID. Omit it to generate a UUID.
+# sessionId: my-session-id
+
+# Bind either a supported web resource or one local file, never both.
+# resource: https://www.bilibili.com/video/BV...
+# share: ./movie.mp4
+
+# Requires share. Omit it to use port + 2; use 0 for an ephemeral port.
+# mediaPort: 8767

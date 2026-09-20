@@ -1,38 +1,35 @@
 #!/usr/bin/env sh
-# AnyTogether 主机 CLI 交互式启动器。
+# AnyTogether 主机 CLI 启动器。
+# 优先级：命令行参数 > 当前目录唯一的 .yml > 内置默认值。
 # 用法:
-#   ./any-together.sh                    # 交互式询问端口与会话名称
+#   ./any-together.sh
 #   ./any-together.sh --port 9000 --name movie-night
-#   ./any-together.sh --port 9000        # 跳过端口询问
-# 其余参数原样透传给 host 进程（如 --share、--auto-accept）。
+#   ./any-together.sh --config /path/to/session.yml
 set -eu
 cd "$(dirname "$0")"
 
-PORT=""
-NAME=""
-PASSTHROUGH=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --port)
-      [ $# -ge 2 ] || { echo "any-together: --port 需要一个值" >&2; exit 2; }
-      PORT="$2"; shift 2 ;;
-    --port=*)
-      PORT="${1#--port=}"; shift ;;
-    --name)
-      [ $# -ge 2 ] || { echo "any-together: --name 需要一个值" >&2; exit 2; }
-      NAME="$2"; shift 2 ;;
-    --name=*)
-      NAME="${1#--name=}"; shift ;;
-    *)
-      PASSTHROUGH="$PASSTHROUGH $1"; shift ;;
-  esac
-done
-
 echo "AnyTogether 主机 CLI"
-if [ -z "$PORT" ]; then
-  printf '监听端口 [8765]: '
-  read -r PORT || PORT=""
+
+# Explicit arguments are forwarded byte-for-byte. The host resolves omitted
+# fields from YAML and then built-in defaults.
+if [ "$#" -gt 0 ]; then
+  echo "正在构建并启动…"
+  npm run build --silent
+  exec node dist/src/cli/host.js "$@"
 fi
+
+# With no arguments, let the host auto-discover the sole root-level .yml.
+# Multiple files are rejected by the host instead of choosing unpredictably.
+set -- ./*.yml
+if [ -f "$1" ]; then
+  echo "检测到 .yml 运行配置，正在构建并启动…"
+  npm run build --silent
+  exec node dist/src/cli/host.js
+fi
+
+# Preserve the original interactive experience when no YAML exists.
+printf '监听端口 [8765]: '
+read -r PORT || PORT=""
 PORT=${PORT:-8765}
 case "$PORT" in
   ''|*[!0-9]*) echo "any-together: 端口必须是数字: $PORT" >&2; exit 2 ;;
@@ -42,15 +39,17 @@ if [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
   exit 2
 fi
 
-if [ -z "$NAME" ]; then
-  printf '会话名称（可选，不含空格，直接回车跳过）: '
-  read -r NAME || NAME=""
-fi
+printf '会话名称（可选，不含空格，直接回车跳过）: '
+read -r NAME || NAME=""
 case "$NAME" in
   *[[:space:]]*) echo "any-together: 会话名称不允许包含空格: $NAME" >&2; exit 2 ;;
 esac
 
+set -- "$PORT"
+if [ -n "$NAME" ]; then
+  set -- "$@" --name "$NAME"
+fi
+
 echo "正在构建并启动…"
 npm run build --silent
-
-exec node dist/src/cli/host.js "$PORT" ${NAME:+--name "$NAME"} $PASSTHROUGH
+exec node dist/src/cli/host.js "$@"

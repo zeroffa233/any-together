@@ -2,121 +2,34 @@ import { spawn } from 'node:child_process';
 import { networkInterfaces } from 'node:os';
 import { isAbsolute } from 'node:path';
 import { stat } from 'node:fs/promises';
+import { resolveHostOptions, type ResolvedHostOptions } from './host-options.js';
 import { SessionAuthority } from '../server/session-authority.js';
 import { SessionApi } from '../server/session-api.js';
 import { LocalMediaServer, type LocalShare } from '../server/local-media-server.js';
 import { createLocalVideoResourceIdentity } from '../shared/local-resource.js';
 import { createBilibiliResourceIdentity } from '../shared/resource.js';
 
-const DEFAULT_PORT = 8765;
+let options: ResolvedHostOptions;
+try {
+  options = await resolveHostOptions(process.argv.slice(2));
+} catch (error) {
+  console.error(`host: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(2);
+}
 
-// Flags are parsed separately so an optional resource URL never consumes a
-// flag value. `--session-id ID` and `--session-id=ID` are equivalent; when
-// omitted, SessionAuthority continues to generate a UUID.
-const args = process.argv.slice(2);
-const autoAccept = args.includes('--auto-accept');
-const positional: string[] = [];
-let fixedSessionId: string | undefined;
-let sessionName: string | undefined;
-let sharePath: string | undefined;
-let mediaPort: number | undefined;
-for (let index = 0; index < args.length; index += 1) {
-  const arg = args[index];
-  if (arg === undefined) continue;
-  if (arg === '--auto-accept') continue;
-  if (arg === '--name') {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) {
-      console.error('host: --name requires a non-empty value');
-      process.exit(2);
-    }
-    sessionName = value;
-    index += 1;
-    continue;
-  }
-  if (arg.startsWith('--name=')) {
-    const value = arg.slice('--name='.length).trim();
-    if (!value) {
-      console.error('host: --name= requires a non-empty value');
-      process.exit(2);
-    }
-    sessionName = value;
-    continue;
-  }
-  if (arg === '--session-id') {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) {
-      console.error('host: --session-id requires a non-empty value');
-      process.exit(2);
-    }
-    fixedSessionId = value;
-    index += 1;
-    continue;
-  }
-  if (arg.startsWith('--session-id=')) {
-    const value = arg.slice('--session-id='.length).trim();
-    if (!value) {
-      console.error('host: --session-id= requires a non-empty value');
-      process.exit(2);
-    }
-    fixedSessionId = value;
-    continue;
-  }
-  if (arg === '--share') {
-    const value = args[index + 1];
-    if (!value || value.startsWith('--')) {
-      console.error('host: --share requires an absolute path to a file');
-      process.exit(2);
-    }
-    sharePath = value;
-    index += 1;
-    continue;
-  }
-  if (arg.startsWith('--share=')) {
-    const value = arg.slice('--share='.length).trim();
-    if (!value) {
-      console.error('host: --share= requires an absolute path to a file');
-      process.exit(2);
-    }
-    sharePath = value;
-    continue;
-  }
-  if (arg === '--media-port') {
-    const value = args[index + 1];
-    const parsedValue = value === undefined ? NaN : Number(value);
-    if (!Number.isInteger(parsedValue) || parsedValue < 0 || parsedValue > 65535) {
-      console.error('host: --media-port requires an integer in 0-65535');
-      process.exit(2);
-    }
-    mediaPort = parsedValue;
-    index += 1;
-    continue;
-  }
-  if (arg.startsWith('--media-port=')) {
-    const parsedValue = Number(arg.slice('--media-port='.length).trim());
-    if (!Number.isInteger(parsedValue) || parsedValue < 0 || parsedValue > 65535) {
-      console.error('host: --media-port requires an integer in 0-65535');
-      process.exit(2);
-    }
-    mediaPort = parsedValue;
-    continue;
-  }
-  positional.push(arg);
+const {
+  port,
+  autoAccept,
+  sessionName,
+  fixedSessionId,
+  sharePath,
+  mediaPort,
+  resourceUrl,
+} = options;
+if (options.configPath !== undefined) {
+  console.log(`host: loaded configuration from ${options.configPath}`);
 }
-const port = Number(positional[0] ?? DEFAULT_PORT);
-const resourceUrl = positional[1];
-if (!Number.isInteger(port) || port < 0 || port > 65535) {
-  console.error(`host: invalid port ${JSON.stringify(positional[0])} (expected an integer in 0-65535)`);
-  process.exit(2);
-}
-if (mediaPort !== undefined && sharePath === undefined) {
-  console.error('host: --media-port requires --share');
-  process.exit(2);
-}
-if (sharePath !== undefined && resourceUrl !== undefined) {
-  console.error('host: --share cannot be combined with a positional resource URL');
-  process.exit(2);
-}
+
 if (sharePath !== undefined) {
   if (!isAbsolute(sharePath)) {
     console.error(`host: --share requires an absolute file path (got ${JSON.stringify(sharePath)})`);
@@ -163,17 +76,6 @@ if (mediaServer !== null) {
   }
 }
 
-// Session names are user-facing aliases: no whitespace so they stay a single
-// copyable token. One CLI process serves exactly one session, so uniqueness
-// holds by construction.
-if (sessionName !== undefined) {
-  const name = sessionName.trim();
-  if (name.length === 0 || /\s/.test(name)) {
-    console.error(`host: invalid session name ${JSON.stringify(sessionName)} (must be non-empty without whitespace)`);
-    process.exit(2);
-  }
-  sessionName = name;
-}
 
 // Without a resource URL (positional or --share) the session starts UNBOUND:
 // the authority has no resourceIdentity until the first host join carries one
