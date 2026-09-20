@@ -1,0 +1,15 @@
+{
+  "$schema": "./any-together.config.schema.json",
+  "host": {
+    "port": 8765,
+    "autoAccept": false,
+    "sessionId": "",
+    "resourceUrl": "",
+    "share": "",
+    "mediaPort": null
+  },
+  "extension": {
+    "browser": "auto",
+    "profileDir": ".any-together/browser-profile"
+  }
+}
