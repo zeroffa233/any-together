@@ -21,6 +21,7 @@
 
 | `type` | 关键字段 | 语义与约束 |
 |---|---|---|
+| `clock-sync-request` | `requestId`；`clientSentAtMs` | 可在 `join` 前发送。服务端回显客户端时间并记录自身收发时间，用于每条连接独立估算 VPS 与客户端的时钟偏移 |
 | `join` | `participantId`；可选 `roleHint`（`'host'\|'client'`）；可选 `resourceIdentity` | 加入会话。身份可选：不知道资源的加入者在 `join-accepted` 中采纳被推资源；**提供且与会话已绑定资源不等** → 拒绝 `resource-mismatch`；未绑定会话则采纳首个 host join 的身份。`roleHint`/`resourceIdentity` 缺省保持与旧客户端线上兼容 |
 | `resource-bind` | `participantId`；`resourceIdentity` | **任一已加入参与者**（host 或 client 均可）可绑定/切换会话媒体。幂等：绑定与会话**完全相同**的身份是 no-op（不 bump revision、不重置播放头，防两端并发绑定同资源的竞态）。不同身份 → 见 §3.3 |
 | `join-decision` | `participantId`（决策者，即 host）；`accepted: boolean` | host 对唯一待定加入者的裁决；非 host/无待定者 → `error` |
@@ -32,6 +33,7 @@
 
 | `type` | 语义 |
 |---|---|
+| `clock-sync-response` | `{ requestId, clientSentAtMs, serverReceivedAtMs, serverSentAtMs }`；客户端以四时间戳公式估算 server-minus-client 偏移 |
 | `join-accepted` | `{ role, participantId, state }`；被接受时推送完整权威状态（含资源身份，未绑定则 `state.resourceIdentity: null`） |
 | `join-rejected` | `{ reason }`：`session-full`、`duplicate-or-empty-participant-id`、`resource-mismatch`、`host-declined`、`host-unavailable`、`no-host-available` |
 | `join-request` | 通知 host 有第二个参与者待审批（含其可选身份） |
@@ -51,7 +53,7 @@
 | `resourceIdentity` | **可空**：`null` = 未绑定；一旦绑定不再为 null |
 | `stateRevision` / `lastSequence` | 每次成功施加意图、资源绑定或终态提升各 **+1**，严格单调；从未施加命令的消息不改动它们 |
 | `mediaPhase` | `MediaPhase`（见 3.2） |
-| `positionSeconds` / `positionAtMs` | 冻结位置锚点：意图应用时先把播放头投影到当前时钟再冻结 |
+| `positionSeconds` / `positionAtMs` | 冻结位置锚点：权威内部始终使用 VPS 时钟；客户端接收后按本连接估算的时钟偏移把 `positionAtMs` 转到本地时钟，再进行投影 |
 | `playbackRate` | `(0, 16]`（`MAX_PLAYBACK_RATE = 16`），服务端强制 |
 | `durationSeconds` | 未知为 `null`；已知为非负有限数 |
 | `lastCommandId` | 最近应用命令的 id，幂等去重用 |
@@ -74,7 +76,7 @@
 
 - `applyIntent` 是**纯函数**：同输入同输出，时钟注入不采样；每次应用先投影再冻结（意图永远不能用旧投影覆盖新位置）；位置四舍五入到毫秒精度（消除浮点噪声）。
 - 非法意图抛 `StateTransitionError`（稳定 `code`）且**不触碰**输入状态：`invalid-intent`、`invalid-seek`、`invalid-rate`、`session-mismatch`、`resource-unbound`、`invalid-state`、`invalid-clock`。
-- 位置投影（`projectPlaybackPosition`）：`'playing'` 时按 `positionSeconds + (now − positionAtMs)/1000 × playbackRate` 外推，不倒退、不超过时长；其他相位返回冻结位置。
+- 位置投影（`projectPlaybackPosition`）：`'playing'` 时按 `positionSeconds + (now − positionAtMs)/1000 × playbackRate` 外推，不倒退、不超过时长；其他相位返回冻结位置。`now` 与 `positionAtMs` 必须属于同一时钟域，禁止直接用浏览器 `Date.now()` 减 VPS 时间戳。
 
 ### 3.3 绑定与切换（`resource-bind`）
 
@@ -92,6 +94,7 @@
 
 ## 4. 客户端行为契约（`SessionClient`）
 
+- `connect()` 在 `join` 前完成三次 `clock-sync-request` 往返，选择网络 RTT 最小的样本；收到的权威状态先把 `positionAtMs`/`updatedAtMs` 从服务端时钟转换到本地时钟。
 - `connect()` 返回 `join-accepted`；加入失败（连接错误/close/拒绝）以显式错误拒绝。
 - `submitIntent(kind, payload?, commandId?)`：默认 `commandId = '<participantId>-<n>'` 递增；
   `clientObservedRevision` 取本端最新 revision。返回 commandId。
@@ -103,8 +106,8 @@
 
 ## 5. 实际状态报告与一致性
 
-`actual-state` 报告的是**页面真实观测**：`positionObservedAtMs` 是观测时刻，服务端在
-`'playing'` 权威相位下按该时刻投影期望位置再比较（见 3.2 投影）。
+`actual-state` 报告的是**页面真实观测**。`positionObservedAtMs` 属于报告端时钟，只用于记录线上事实；
+服务端一致性判定使用报告的 VPS 到达时刻投影权威位置，绝不把客户端绝对时间带入 VPS 投影。
 
 `evaluateActualState(authoritative, report)` 产出 `ConsistencyResult { consistent, issues[] }`：
 
@@ -181,6 +184,7 @@ type SessionStatusMessage = {
 - 全部消息 `type`、字段名、`MediaPhase`/`IntentKind`/`applyResult` 取值、`ResourceIdentity` 结构；
 - 状态机不变量：revision/sequence 单调、`resource-unbound` 拒绝、seek/rate 边界（`0.001` 容差、`16` 上限）；
 - 一致性判定阈值与相位兼容规则（`250ms`、`1e-9`、ready≡paused、瞬时相位、终态晋升条件）。
+- 时钟不变量：每条连接独立校准偏移；服务端状态只用 VPS 时钟，客户端状态只在转换为本地时钟后投影；
 
 **兼容的扩展路径**：
 - 新增站点同步器**不需要任何协议变更**：身份守卫与 `resource-bind` 本就泛化（`isValidResourceIdentity`

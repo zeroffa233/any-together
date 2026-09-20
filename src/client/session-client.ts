@@ -1,6 +1,8 @@
 import WebSocket from 'ws';
+import { estimateServerClockOffset, localizePlaybackStateClock, type ClockSyncEstimate } from '../core/clock-sync.js';
 import {
   isDiagnosticMessage,
+  isClockSyncResponse,
   isErrorMessage,
   isJoinAcceptedMessage,
   isJoinRequestMessage,
@@ -74,6 +76,11 @@ export class SessionClient {
   private joinResolve: ((message: JoinAccepted) => void) | undefined;
   private joinReject: ((error: Error) => void) | undefined;
   private nextCommandNumber = 0;
+  private serverClockOffsetMs: number | undefined;
+  private clockSyncSamples: ClockSyncEstimate[] = [];
+  private pendingClockSync: { requestId: string; clientSentAtMs: number } | undefined;
+  private clockSyncTimeout: ReturnType<typeof setTimeout> | undefined;
+  private clockSyncSequence = 0;
 
   constructor(options: SessionClientOptions) {
     this.options = options;
@@ -87,6 +94,10 @@ export class SessionClient {
     const { promise, resolve, reject } = Promise.withResolvers<JoinAccepted>();
     this.joinResolve = resolve;
     this.joinReject = reject;
+    this.serverClockOffsetMs = undefined;
+    this.clockSyncSamples = [];
+    this.pendingClockSync = undefined;
+    this.clockSyncSequence = 0;
 
     socket.on('message', (raw) => this.handleMessage(raw.toString()));
     socket.on('error', (error) => {
@@ -100,21 +111,70 @@ export class SessionClient {
       this.rejectJoin(new Error(`Connection closed before join was accepted (${detail})`));
     });
     socket.once('open', () => {
-      const join: ClientMessage = {
-        type: 'join',
-        participantId: this.options.participantId,
-        ...(this.options.resourceIdentity === undefined ? {} : { resourceIdentity: this.options.resourceIdentity }),
-        ...(this.options.roleHint === undefined ? {} : { roleHint: this.options.roleHint }),
-      };
-      socket.send(JSON.stringify(join));
+      this.sendClockSyncSample(socket);
     });
     return promise;
   }
 
+
+  private sendClockSyncSample(socket: WebSocket): void {
+    const clientSentAtMs = Date.now();
+    const requestId = `${this.options.participantId}-clock-${++this.clockSyncSequence}`;
+    this.pendingClockSync = { requestId, clientSentAtMs };
+    socket.send(JSON.stringify({ type: 'clock-sync-request', requestId, clientSentAtMs }));
+    clearTimeout(this.clockSyncTimeout);
+    this.clockSyncTimeout = setTimeout(() => {
+      if (this.pendingClockSync?.requestId !== requestId) return;
+      this.rejectJoin(new Error('Timed out synchronizing client and authority clocks'));
+      socket.close(1011, 'clock-sync-timeout');
+    }, 5000);
+    this.clockSyncTimeout.unref();
+  }
+
+  private handleClockSyncResponse(message: ServerMessage & { type: 'clock-sync-response' }): void {
+    const pending = this.pendingClockSync;
+    const socket = this.socket;
+    if (!pending || !socket || socket.readyState !== WebSocket.OPEN) return;
+    if (message.requestId !== pending.requestId || message.clientSentAtMs !== pending.clientSentAtMs) return;
+    clearTimeout(this.clockSyncTimeout);
+    this.clockSyncTimeout = undefined;
+    this.pendingClockSync = undefined;
+    this.clockSyncSamples.push(estimateServerClockOffset({
+      clientSentAtMs: pending.clientSentAtMs,
+      serverReceivedAtMs: message.serverReceivedAtMs,
+      serverSentAtMs: message.serverSentAtMs,
+      clientReceivedAtMs: Date.now(),
+    }));
+    if (this.clockSyncSamples.length < 3) {
+      this.sendClockSyncSample(socket);
+      return;
+    }
+    const best = this.clockSyncSamples.reduce((left, right) => (
+      right.roundTripMs < left.roundTripMs ? right : left
+    ));
+    this.serverClockOffsetMs = best.serverClockOffsetMs;
+    const join: ClientMessage = {
+      type: 'join',
+      participantId: this.options.participantId,
+      ...(this.options.resourceIdentity === undefined ? {} : { resourceIdentity: this.options.resourceIdentity }),
+      ...(this.options.roleHint === undefined ? {} : { roleHint: this.options.roleHint }),
+    };
+    socket.send(JSON.stringify(join));
+  }
+
+  private localizeState(state: PlaybackState): PlaybackState {
+    if (this.serverClockOffsetMs === undefined) {
+      throw new Error('Received playback state before clock synchronization completed');
+    }
+    return localizePlaybackStateClock(state, this.serverClockOffsetMs);
+  }
   async close(): Promise<void> {
     const socket = this.socket;
     this.socket = undefined;
     if (!socket) return;
+    clearTimeout(this.clockSyncTimeout);
+    this.clockSyncTimeout = undefined;
+    this.pendingClockSync = undefined;
     if (socket.readyState === WebSocket.CLOSED) return;
     const { promise, resolve } = Promise.withResolvers<void>();
     socket.once('close', () => resolve());
@@ -335,6 +395,14 @@ export class SessionClient {
     const message = parsed as ServerMessage;
 
     switch (message.type) {
+      case 'clock-sync-response': {
+        if (!isClockSyncResponse(message)) {
+          this.rejectJoin(new Error('Invalid clock-sync response'));
+          return;
+        }
+        this.handleClockSyncResponse(message);
+        return;
+      }
       case 'join-accepted': {
         if (!isJoinAcceptedMessage(message)) {
           this.rejectJoin(new Error('Invalid join-accepted message'));
@@ -345,11 +413,11 @@ export class SessionClient {
           return;
         }
         this.joinedRole = message.role;
-        // The authority is authoritative about the resource: the pushed state
-        // (possibly null-identity while unbound) becomes the reference for
-        // actual-state reports; later resource-bind broadcasts update it.
-        this.acceptState(message.state);
-        this.joinResolve?.(message);
+        // The authority is authoritative about the resource. Translate its
+        // absolute anchors into this process's clock before exposing state.
+        const state = this.localizeState(message.state);
+        this.acceptState(state);
+        this.joinResolve?.({ ...message, state });
         this.clearJoinHandlers();
         return;
       }
@@ -368,12 +436,12 @@ export class SessionClient {
       }
       case 'state': {
         if (!isPlaybackState(message.state) || message.state.sessionId !== this.options.sessionId) return;
-        this.acceptState(message.state);
+        this.acceptState(this.localizeState(message.state));
         return;
       }
       case 'snapshot': {
         if (!isPlaybackState(message.state) || message.state.sessionId !== this.options.sessionId) return;
-        this.acceptState(message.state, true);
+        this.acceptState(this.localizeState(message.state), true);
         return;
       }
       case 'session-status': {
@@ -411,6 +479,9 @@ export class SessionClient {
   }
 
   private rejectJoin(error: Error): void {
+    clearTimeout(this.clockSyncTimeout);
+    this.clockSyncTimeout = undefined;
+    this.pendingClockSync = undefined;
     this.joinReject?.(error);
     this.clearJoinHandlers();
   }

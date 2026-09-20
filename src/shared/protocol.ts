@@ -390,6 +390,46 @@ export function isSnapshotRequest(value: unknown): value is SnapshotRequest {
 }
 
 /**
+ * Per-connection four-timestamp clock synchronization. The request may be
+ * sent before joining; the authority echoes the client timestamp and records
+ * its own receive/send instants so the client can estimate server clock offset
+ * without assuming synchronized wall clocks.
+ */
+export type ClockSyncRequest = {
+  type: 'clock-sync-request';
+  requestId: string;
+  clientSentAtMs: number;
+};
+
+export function isClockSyncRequest(value: unknown): value is ClockSyncRequest {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'clock-sync-request'
+    && typeof candidate.requestId === 'string'
+    && candidate.requestId.length > 0
+    && Number.isFinite(candidate.clientSentAtMs);
+}
+
+export type ClockSyncResponse = {
+  type: 'clock-sync-response';
+  requestId: string;
+  clientSentAtMs: number;
+  serverReceivedAtMs: number;
+  serverSentAtMs: number;
+};
+
+export function isClockSyncResponse(value: unknown): value is ClockSyncResponse {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'clock-sync-response'
+    && typeof candidate.requestId === 'string'
+    && candidate.requestId.length > 0
+    && Number.isFinite(candidate.clientSentAtMs)
+    && Number.isFinite(candidate.serverReceivedAtMs)
+    && Number.isFinite(candidate.serverSentAtMs);
+}
+
+/**
  * Host decision on the single pending join request. `participantId` identifies
  * the DECISION MAKER (the host), matching the sender semantics of every other
  * client message; the target is the one pending joiner.
@@ -460,6 +500,7 @@ export function isSyncItemIntent(value: unknown): value is SyncItemIntent {
 
 export type ClientMessage =
   | ClientJoin
+  | ClockSyncRequest
   | ResourceBindMessage
   | PlaybackIntent
   | SnapshotRequest
@@ -630,6 +671,7 @@ export function isErrorMessage(value: unknown): value is ErrorMessage {
 
 export type ServerMessage =
   | JoinAcceptedMessage
+  | ClockSyncResponse
   | JoinRejectedMessage
   | JoinRequestMessage
   | StateMessage

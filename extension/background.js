@@ -41,6 +41,12 @@ const SESSION = {
   status: 'disconnected', // disconnected | connecting | connected | error
   ws: null,
   keepalive: null,
+  clockOffsetMs: null, // server minus this browser clock, estimated per connection
+  clockSyncSamples: [],
+  clockSyncPending: null, // { requestId, clientSentAtMs }
+  clockSyncTimeout: null,
+  clockSyncSeq: 0,
+  joinSent: false,
   host: '',
   port: 0,
   sessionId: '',
@@ -79,6 +85,8 @@ const SESSION = {
 const VALID_INTENT_KINDS = ['play', 'pause', 'seek', 'set-rate', 'replay'];
 const CREATE_TAB_THROTTLE_MS = 10000;
 const DEFAULT_PORT = 8765;
+const CLOCK_SYNC_SAMPLE_COUNT = 3;
+const CLOCK_SYNC_TIMEOUT_MS = 5000;
 
 // --- identity helpers (delegated to the shared AnyTogetherIdentity registry) --
 
@@ -243,6 +251,82 @@ function setNotice(text) {
 
 // --- connection lifecycle ----------------------------------------------------
 
+function resetClockSync() {
+  clearTimeout(SESSION.clockSyncTimeout);
+  SESSION.clockOffsetMs = null;
+  SESSION.clockSyncSamples = [];
+  SESSION.clockSyncPending = null;
+  SESSION.clockSyncTimeout = null;
+  SESSION.clockSyncSeq = 0;
+  SESSION.joinSent = false;
+}
+
+function sendClockSyncSample() {
+  const ws = SESSION.ws;
+  if (!ws || ws.readyState !== WebSocket.OPEN || SESSION.clockSyncPending !== null) return;
+  const clientSentAtMs = Date.now();
+  const requestId = `${SESSION.participantId}-clock-${++SESSION.clockSyncSeq}`;
+  SESSION.clockSyncPending = { requestId, clientSentAtMs };
+  ws.send(JSON.stringify({ type: 'clock-sync-request', requestId, clientSentAtMs }));
+  SESSION.clockSyncTimeout = setTimeout(() => {
+    if (SESSION.clockSyncPending?.requestId !== requestId) return;
+    SESSION.lastError = '与服务端的时钟同步超时，请确认 CLI 与扩展均已更新';
+    setStatus('error');
+    ws.close(1011, 'clock-sync-timeout');
+  }, CLOCK_SYNC_TIMEOUT_MS);
+}
+
+function handleClockSyncResponse(message) {
+  const pending = SESSION.clockSyncPending;
+  if (!pending
+    || message.requestId !== pending.requestId
+    || message.clientSentAtMs !== pending.clientSentAtMs
+    || !Number.isFinite(message.serverReceivedAtMs)
+    || !Number.isFinite(message.serverSentAtMs)) return;
+  const clientReceivedAtMs = Date.now();
+  const clientElapsedMs = clientReceivedAtMs - pending.clientSentAtMs;
+  const serverProcessingMs = message.serverSentAtMs - message.serverReceivedAtMs;
+  if (clientElapsedMs < 0 || serverProcessingMs < 0) return;
+  const sample = {
+    offsetMs: (
+      (message.serverReceivedAtMs - pending.clientSentAtMs)
+      + (message.serverSentAtMs - clientReceivedAtMs)
+    ) / 2,
+    roundTripMs: Math.max(0, clientElapsedMs - serverProcessingMs),
+  };
+  clearTimeout(SESSION.clockSyncTimeout);
+  SESSION.clockSyncTimeout = null;
+  SESSION.clockSyncPending = null;
+  SESSION.clockSyncSamples.push(sample);
+  if (SESSION.clockSyncSamples.length > 8) SESSION.clockSyncSamples.shift();
+  if (SESSION.clockSyncSamples.length < CLOCK_SYNC_SAMPLE_COUNT) {
+    sendClockSyncSample();
+    return;
+  }
+  const best = SESSION.clockSyncSamples.reduce((left, right) => (
+    right.roundTripMs < left.roundTripMs ? right : left
+  ));
+  SESSION.clockOffsetMs = best.offsetMs;
+  const ws = SESSION.ws;
+  if (!SESSION.joinSent && ws?.readyState === WebSocket.OPEN) {
+    SESSION.joinSent = true;
+    ws.send(JSON.stringify({
+      type: 'join',
+      participantId: SESSION.participantId,
+    }));
+  }
+}
+
+function localizeAuthoritativeState(state) {
+  if (!state || typeof state !== 'object' || !Number.isFinite(SESSION.clockOffsetMs)) return null;
+  if (!Number.isFinite(state.positionAtMs) || !Number.isFinite(state.updatedAtMs)) return null;
+  return {
+    ...state,
+    positionAtMs: state.positionAtMs - SESSION.clockOffsetMs,
+    updatedAtMs: state.updatedAtMs - SESSION.clockOffsetMs,
+  };
+}
+
 async function connect(options) {
   // Idempotent lifecycle guard: a repeated connect click must never tear down
   // a healthy (or in-flight) connection. Only a disconnected or errored
@@ -299,6 +383,7 @@ async function connect(options) {
   // The authority is authoritative about the resource: SESSION.identity is
   // adopted from join-accepted (or a later resource-bind state), not here.
   SESSION.identity = null;
+  resetClockSync();
   setStatus('connecting');
 
   let ws;
@@ -313,11 +398,7 @@ async function connect(options) {
 
   ws.addEventListener('open', () => {
     if (SESSION.ws !== ws) return;
-    const join = {
-      type: 'join',
-      participantId: SESSION.participantId,
-    };
-    ws.send(JSON.stringify(join));
+    sendClockSyncSample();
   });
 
   ws.addEventListener('message', (event) => {
@@ -350,6 +431,7 @@ async function connect(options) {
     SESSION.pendingJoin = null;
     SESSION.notice = null;
     SESSION.applyQueue = Promise.resolve();
+    resetClockSync();
     stopKeepalive();
     if (SESSION.status !== 'error') {
       SESSION.lastError = null;
@@ -380,6 +462,7 @@ function disconnect() {
   SESSION.notice = null;
   SESSION.applyQueue = Promise.resolve();
   SESSION.lastError = null;
+  resetClockSync();
   stopKeepalive();
   if (ws) {
     try {
@@ -405,6 +488,9 @@ function handleServerMessage(raw) {
   if (!message || typeof message !== 'object') return;
 
   switch (message.type) {
+    case 'clock-sync-response':
+      handleClockSyncResponse(message);
+      break;
     case 'join-accepted': {
       const state = message.state;
       if (message.participantId !== SESSION.participantId
@@ -478,8 +564,9 @@ function handleServerMessage(raw) {
  * revision and the apply pipeline re-routes every participant page to the
  * fresh resource.
  */
-function acceptAuthoritativeState(state, isSnapshot = false) {
-  if (!state || typeof state !== 'object' || !Number.isInteger(state.stateRevision)) return;
+function acceptAuthoritativeState(serverState, isSnapshot = false) {
+  const state = localizeAuthoritativeState(serverState);
+  if (!state || !Number.isInteger(state.stateRevision)) return;
   const currentRevision = SESSION.latestState?.stateRevision ?? -1;
   if (state.stateRevision <= currentRevision) return; // stale — never regress
   if (!isSnapshot && state.stateRevision > currentRevision + 1) {
@@ -883,6 +970,7 @@ function startKeepalive() {
   stopKeepalive();
   SESSION.keepalive = setInterval(() => {
     requestSnapshot();
+    sendClockSyncSample();
   }, 20000);
 }
 

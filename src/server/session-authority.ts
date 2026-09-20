@@ -6,6 +6,7 @@ import { evaluateActualState, type ConsistencyResult } from '../core/consistency
 import {
   isActualStateReport,
   isClientJoin,
+  isClockSyncRequest,
   isJoinDecision,
   isPlaybackIntent,
   isResourceBindMessage,
@@ -263,7 +264,8 @@ export class SessionAuthority {
 
   private handleConnection(socket: WebSocket): void {
     socket.on('message', (raw) => {
-      void this.handleMessage(socket, raw);
+      const receivedAtMs = Date.now();
+      void this.handleMessage(socket, raw, receivedAtMs);
     });
     socket.on('close', () => {
       // A pending joiner that gives up frees its slot silently; the host never
@@ -291,7 +293,7 @@ export class SessionAuthority {
     });
   }
 
-  private async handleMessage(socket: WebSocket, raw: RawData): Promise<void> {
+  private async handleMessage(socket: WebSocket, raw: RawData, receivedAtMs: number): Promise<void> {
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw.toString());
@@ -316,6 +318,19 @@ export class SessionAuthority {
     // error and can never reach the state machine or crash the authority.
     try {
       switch (message.type) {
+        case 'clock-sync-request':
+          if (!isClockSyncRequest(message)) {
+            this.send(socket, { type: 'error', code: 'invalid-message', message: 'Malformed clock-sync request' });
+            return;
+          }
+          this.send(socket, {
+            type: 'clock-sync-response',
+            requestId: message.requestId,
+            clientSentAtMs: message.clientSentAtMs,
+            serverReceivedAtMs: receivedAtMs,
+            serverSentAtMs: Date.now(),
+          });
+          return;
         case 'join':
           if (!isClientJoin(message)) {
             this.send(socket, { type: 'error', code: 'invalid-message', message: 'Malformed join message' });
@@ -789,14 +804,17 @@ export class SessionAuthority {
     if (promotesPhase) {
       const { errorCode: _previousErrorCode, ...stateWithoutError } = this.state;
       const nextRevision = this.state.stateRevision + 1;
+      const nowMs = Date.now();
       this.state = {
         ...stateWithoutError,
         stateRevision: nextRevision,
         lastSequence: this.state.lastSequence + 1,
         mediaPhase: observedPhase,
         positionSeconds: report.positionSeconds,
-        positionAtMs: report.positionObservedAtMs,
-        updatedAtMs: Date.now(),
+        // The report timestamp belongs to the browser clock. Re-anchor the
+        // observed terminal position in the authority's clock domain.
+        positionAtMs: nowMs,
+        updatedAtMs: nowMs,
         lastCommandId: `observation:${participant.id}:${nextRevision}`,
         ...(observedPhase === 'error' && report.error !== undefined ? { errorCode: report.error } : {}),
       };
@@ -874,6 +892,10 @@ export class SessionAuthority {
       ...stateWithoutError,
       stateRevision: nextRevision,
       lastSequence: this.state.lastSequence + 1,
+      // Re-anchor before broadcasting so a resync never repeats an old
+      // playing anchor. Projection stays entirely in the authority clock.
+      positionSeconds: projectPlaybackPosition(this.state, nowMs),
+      positionAtMs: nowMs,
       lastCommandId: `resync:${nextRevision}`,
       updatedAtMs: nowMs,
     };

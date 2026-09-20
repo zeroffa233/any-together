@@ -165,7 +165,7 @@ function formatTime(seconds) {
 }
 
 function projectedPosition(state) {
-  // Project the authoritative playhead to now instead of freezing the anchor.
+  // background.js localizes the authority anchor into this browser's clock.
   let position = Number.isFinite(state.positionSeconds) ? state.positionSeconds : 0;
   if (state.mediaPhase === 'playing' && Number.isFinite(state.positionAtMs)) {
     const rate = Number.isFinite(state.playbackRate) ? state.playbackRate : 1;

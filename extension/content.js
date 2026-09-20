@@ -223,12 +223,10 @@ function applyPhase(target, phase) {
 }
 
 /**
- * Project the authoritative playhead to NOW instead of using the frozen anchor
- * as the current position. Mirrors src/core/playback-state.ts
- * projectPlaybackPosition: while the phase advances ('playing') the position
- * is extrapolated from positionSeconds at positionAtMs using playbackRate;
- * every other phase keeps the frozen position. Never moves backwards, never
- * exceeds the duration.
+ * Project the authoritative playhead to NOW. background.js has already
+ * translated the authority's absolute anchor into this browser's clock domain
+ * with a per-connection clock-sync handshake; subtracting it from Date.now()
+ * therefore measures elapsed playback, not VPS/browser wall-clock skew.
  */
 function projectedPosition(state) {
   if (state.mediaPhase !== 'playing') return state.positionSeconds;

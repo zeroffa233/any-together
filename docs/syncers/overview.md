@@ -80,6 +80,9 @@ sequenceDiagram
     participant B as background.js
     participant A as SessionAuthority
     participant K as 同步核心
+    B->>A: clock-sync-request × 3
+    A-->>B: 四时间戳响应
+    Note over B,A: 每条连接选择最低 RTT 样本并转换状态锚点
     U->>C: 原生事件(play/pause/seeked/ratechange)
     C->>B: user-intent(唯一 commandId, 窗口期内抑制回声)
     B->>A: intent 消息
@@ -98,6 +101,7 @@ sequenceDiagram
 要点（`[当前实现]`，详见 protocol.md）：
 - 用户原生操作由 content.js 转述为语义 intent，**权威裁决永远在服务端**；页面永不自我判定。
 - 每次 `applyIntent` 使 `stateRevision`/`lastSequence` 各 +1；`state` 广播推动两端施加。
+- 每条客户端连接在加入前独立估算 VPS 时钟偏移；服务端锚点转换到客户端时钟后才允许页面投影，设备间绝对时间不直接相减。
 - content.js 只接受**严格更新**的权威状态（revision 守卫），且与当前页面资源不匹配时拒绝执行（身份守卫）。
 - 实际状态报告在**当前 revision** 上做一致性判定；`session-status.ready` 要求双方均已上报且无阻断问题。
 
@@ -121,7 +125,7 @@ sequenceDiagram
 | `AdapterRegistryError` | 注册期失败（`'duplicate-adapter'\|'duplicate-domain'\|'invalid-registration'\|'invalid-rule'`），resolve 永不抛。 |
 | 参与者 / host / client | 会话最多 2 人：先加入者为 host（创建者/权威审批者），后加入者为 client；`roleHint` 仅建议，最终由权威裁决。 |
 | `stateRevision` / `lastSequence` | 每次成功施加意图或资源绑定各 +1，严格单调；`lastCommandId` 记录已应用命令用于幂等。 |
-| 投影（projection） | `'playing'` 相位下按 `positionSeconds + (now − positionAtMs)/1000 × playbackRate` 外推当前位置；其他相位冻结锚点。 |
+| 投影（projection） | `'playing'` 相位下按 `positionSeconds + (now − positionAtMs)/1000 × playbackRate` 外推当前位置；其他相位冻结锚点。`now` 与锚点必须在同一时钟域：VPS 内部使用 VPS 时钟，客户端先按连接偏移转换为本地时钟。 |
 | 绑定（bind） | `resource-bind` 把会话绑定到某 `ResourceIdentity`；绑定前会话无资源（identity 为 null），播放意图被拒（`resource-unbound`）。 |
 
 ## 5. 当前范围与诚实边界
@@ -129,7 +133,7 @@ sequenceDiagram
 - `[当前实现]` 内置同步器有 **Bilibili**（`/video`、`/video/...` 页面）与 **YouTube**（`/watch` 且 query 含非空 `v=` 参数）两个；浏览器 manifest 只注入这两类资源页。
 - `[当前实现]` 同步语义仅覆盖**单一媒体的相位/位置/速率/时长**；不包含滚动、PDF、播放列表等非媒体标量。
   `[未来能力]` 多资源/非媒体标量需要新的身份与状态扩展，当前协议与一致性判定均为“单资源、媒体相位”设计。
-- `[当前实现]` 仓库内验证手段是 Node 单元/集成测试（`npm test`，当前 133/133 通过）与冒烟脚本（`npm run smoke:process` / `smoke:lan`）、扩展静态检查。
+- `[当前实现]` 仓库内验证手段是 Node 单元/集成测试（`npm test`，当前 255/255 通过）与冒烟脚本（`npm run smoke:process` / `smoke:lan`）、扩展静态检查。
   Node 侧注册表与两个适配器的语义由测试验证；浏览器侧（identity.js 注册、manifest 注入范围、content.js 驱动）只经过扩展静态检查与 Node 侧同构规则测试。
 - **真实浏览器验证边界**：真实 Chrome（macOS/Windows）实机与跨设备同步验证**尚未执行**（含 YouTube），本文档不宣称任何实机验证结果；
   真实浏览器验证属于提交流程的一部分（见 authoring.md §8），提交时须注明实际测过的平台，未测平台不得宣称。
