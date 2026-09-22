@@ -7,12 +7,12 @@
 
 ## 1. 会话模型
 
-- 一个会话最多 **2 名参与者**（host + client）。先加入者自动成为 host（创建者），后加入者成为 client；
+- 一个会话由一名 **host** 与任意数量的 **client** 组成。先加入者自动成为 host（创建者），后续加入者成为 client；
   join 里的 `roleHint` 仅是建议，权威方最终裁决并通过 `join-accepted.role` 回显。
 - 会话资源可**未绑定**（`PlaybackState.resourceIdentity === null`，直到首个 host join 携带身份或
   任一已加入参与者发送 `resource-bind`）。未绑定期间一切播放意图被拒（`resource-unbound`）。
-- 第二个参与者需要 host 审批（`join-request` → `join-decision`），除非权威以 `autoAcceptJoins`
-  启动（仅限 CLI 冒烟，禁止手工会话使用）。
+- 后续加入者需要 host 审批（`join-request` → `join-decision`），多个加入请求可并发待审，由 host 按
+  `joinerId` 逐个裁决；除非权威以 `autoAcceptJoins` 启动（仅限 CLI 冒烟，禁止手工会话使用）。
 - 服务端消息按到达顺序同步裁决——到达顺序即该会话的确定性命令顺序。
 
 ## 2. 线上消息
@@ -24,7 +24,7 @@
 | `clock-sync-request` | `requestId`；`clientSentAtMs` | 可在 `join` 前发送。服务端回显客户端时间并记录自身收发时间，用于每条连接独立估算 VPS 与客户端的时钟偏移 |
 | `join` | `participantId`；可选 `roleHint`（`'host'\|'client'`）；可选 `resourceIdentity` | 加入会话。身份可选：不知道资源的加入者在 `join-accepted` 中采纳被推资源；**提供且与会话已绑定资源不等** → 拒绝 `resource-mismatch`；未绑定会话则采纳首个 host join 的身份。`roleHint`/`resourceIdentity` 缺省保持与旧客户端线上兼容 |
 | `resource-bind` | `participantId`；`resourceIdentity` | **任一已加入参与者**（host 或 client 均可）可绑定/切换会话媒体。幂等：绑定与会话**完全相同**的身份是 no-op（不 bump revision、不重置播放头，防两端并发绑定同资源的竞态）。不同身份 → 见 §3.3 |
-| `join-decision` | `participantId`（决策者，即 host）；`accepted: boolean` | host 对唯一待定加入者的裁决；非 host/无待定者 → `error` |
+| `join-decision` | `participantId`（决策者，即 host）；`accepted: boolean`；可选 `joinerId` | host 裁决待审批加入请求：`joinerId` 指定目标加入者；多个请求待审时**必须**指定（否则 `ambiguous-join-decision`），单一待审时可省略（兼容旧客户端）；目标不存在 → `no-pending-join`；非 host → `not-host` |
 | `intent` | `commandId`；`sessionId`；`participantId`；`clientObservedRevision`；`kind`；可选 `payload`；`createdAtMs` | 播放意图，见 §3。`commandId` 重复 → 权威回当前状态且**绝不重放**（幂等）；`sessionId` 不符 → `session-mismatch` |
 | `snapshot-request` | `participantId`；`observedRevision` | 请求当前权威快照 → `snapshot` |
 | `actual-state` | `sessionId`；`participantId`；`observedRevision`；`resourceIdentity`；`mediaPhase`；`positionSeconds`；`positionObservedAtMs`；`playbackRate`；`durationSeconds`；`adapterId`；`applyResult`；可选 `error` | 页面真实观测报告，见 §5。守卫要求所有字段齐全且结构合法 |
@@ -35,8 +35,9 @@
 |---|---|
 | `clock-sync-response` | `{ requestId, clientSentAtMs, serverReceivedAtMs, serverSentAtMs }`；客户端以四时间戳公式估算 server-minus-client 偏移 |
 | `join-accepted` | `{ role, participantId, state }`；被接受时推送完整权威状态（含资源身份，未绑定则 `state.resourceIdentity: null`） |
-| `join-rejected` | `{ reason }`：`session-full`、`duplicate-or-empty-participant-id`、`resource-mismatch`、`host-declined`、`host-unavailable`、`no-host-available` |
-| `join-request` | 通知 host 有第二个参与者待审批（含其可选身份） |
+| `join-rejected` | `{ reason }`：`duplicate-or-empty-participant-id`、`resource-mismatch`、`host-declined`、`host-unavailable`、`no-host-available` |
+| `join-request` | 通知 host 有参与者待审批（含其可选身份）；多个请求可并发待审 |
+| `join-request-withdrawn` | 通知 host 某待审批加入者已在裁决前断开（`participantId` 指明谁）；host 应撤下对应审批卡 |
 | `state` | 权威 `PlaybackState` 广播（每次成功意图/bind/终态提升都广播） |
 | `snapshot` | `snapshot-request` 的应答，携带当前 `PlaybackState` |
 | `session-status` | 可观察就绪度，见 §6；仅变化时广播（防稳态报告刷屏） |
@@ -121,7 +122,7 @@
 | `unacceptable-phase` | 报告相位为 `'error'`（必须显式诊断，绝不静默当成功） |
 | `position-drift` | 仅在相位等价且双方非瞬时相位时判定；漂移 `> POSITION_DRIFT_THRESHOLD_MS = 250ms` |
 | `rate-mismatch` | `|report.rate − 权威rate| > 1e-9` |
-| `duration-mismatch` | **双方都已知**时长且不等（权威未知时长时，报告携带时长是补全信息而非失配） |
+| `duration-mismatch` | **双方都已知**时长且不等（权威未知时长时，报告携带时长是补全信息而非失配；"双方"指该份报告与权威状态） |
 | `apply-failure` | `applyResult ≠ 'applied'`（取报告 `error` 为详情） |
 
 全部 10 种 issue 都在 `READINESS_BLOCKING_KINDS` 中（默认阻断就绪门）。
@@ -138,7 +139,7 @@
 type SessionStatusMessage = {
   type: 'session-status';
   sessionId: string;
-  ready: boolean;      // 仅当双方都已上报且一致性干净才为 true
+  ready: boolean;      // 仅当全体参与者都已上报且一致性干净才为 true
   reason?: string;     // 'awaiting-second-participant' | 'actual-state-desync' | 'awaiting-actual-state'
   stateRevision: number;
   participants: SessionParticipantStatus[]; // { participantId, role, reported, consistent }

@@ -8,13 +8,13 @@
 
 ## 1. 产品边界与 HCI 不变量
 
-- Popup 只有一个会话；主机/从机是**互斥**的单选模式，不能同时连接或在活动连接中切换角色。切换活动角色必须先断开。
-- 选择的角色只作为 `join.roleHint`（用户意图），**实际角色永远以 `join-accepted.role` 为准**。界面必须显示实际分配结果，不得把选中的 radio 当作已获角色。
-- 本次角色收敛规则：首位参与者带 `roleHint: client` 时拒绝；已有 host 时带 `roleHint: host` 的加入请求拒绝。旧客户端省略 `roleHint` 时保留“先到者为 host”的兼容行为。错误文案按稳定 `code/reason` 映射，不能解析服务端英文 `message`。
+- Popup 一次只承载一个会话连接；角色由权威按加入顺序分配（先加入者为 host），不能在活动连接中切换会话或角色，切换必须先断开。
+- 实际角色永远以 `join-accepted.role` 为准。界面显示实际分配结果：host 负责审批后续加入请求，client 直接进入同步；不得把本地假设当作已获角色。
+- 角色冲突按稳定 `code/reason` 映射为可操作文案，不能解析服务端英文 `message`：会话已有 host 时以 host 身份加入 → “此会话已有主机，请切换为从机”；空会话以 client 身份加入 → “此会话需要先由主机创建，请在创建者设备选择主机”。
 - Connect/加入、接受、拒绝均为不可重复提交操作：提交瞬间锁定按钮；响应或明确失败后才恢复。不能通过快速双击建立两个 socket 或发出两个审批。
 - 不提供播放、暂停、跳转、倍速、重播或“控制播放器”按钮；不提供手动视频 URL 输入。播放操作只能发生在页面原生播放器，popup 只读显示其权威投影。
 - 当前支持资源为 Bilibili 视频页（`/video`）和 YouTube 视频页（`/watch?v=...`）。页面通过同步器按当前 tab 自动识别；popup 不要求用户输入 URL。其它站点只可显示未支持/未绑定，不得声称可同步。
-- 会话最多两名参与者（host + client）。资源身份可暂时为 `null`；收到 host/client 的 `resource-bind` 后，权威资源切换会覆盖双方当前/可复用的视频 tab，避免重复窗口和叠加声音。
+- 会话由一名 host 和任意数量的 client 组成。资源身份可暂时为 `null`；收到 `resource-bind` 后，权威资源切换会覆盖各参与者当前/可复用的视频 tab，避免重复窗口和叠加声音。
 
 ## 2. 信息架构
 
@@ -113,17 +113,17 @@ popup
 
 ## 4. 最小配置与首要 CTA
 
-### 4.1 主机模式
+### 4.1 连接表单（单表单，无模式切换）
 
 | 字段 | 展示与行为 |
 |---|---|
-| 模式 | “主机 / 从机” radio，默认主机；互斥。连接活动时锁定。 |
-| 地址 | `127.0.0.1` 只读，文案“本机伴随进程”；不可让用户改成本机 IP。 |
-| 端口 | 默认 `8765`；沿用当前 WS 端口，合法范围 1–65535。Session API 使用 WS 端口 + 1，由 background 查询。 |
-| Session ID | 通过 `GET /api/session` 从本机伴随进程获取；为空时显示“正在读取本机 Session…”。不要求用户输入 URL。 |
-| 参与者 ID | 可选；留空显示“自动生成”，不要阻塞连接。 |
-| 首要 CTA | 未连接为“连接并创建会话”；输入合法性通过后立即锁定为“连接中…”。 |
-| 分享 | Session ID 可见后显示“复制分享串”。成功提示“已复制，可发送给从机”；复制失败保留可选中的分享串和“请手动复制”。 |
+| 服务器地址 | 必填；接受 hostname/IP 或 `host:port` 内联写法，不偷偷改写为 localhost。 |
+| 端口 | 默认 `8765`，范围 1–65535。会话 API 使用 WS 端口 + 1，由 background 查询。 |
+| Session ID | 必填；使用分享串中的 Session ID 或会话名称。 |
+| 参与者 ID | 高级字段；留空由 background 生成，不阻塞连接。 |
+| 首要 CTA | 未连接为“连接”；提交后显示“正在连接…”，锁定重复提交。 |
+
+角色不需要选择：先加入者被权威分配为 host，后续加入者为 client，`join-accepted.role` 是唯一事实。host 的 CLI 启动后打印分享串，所有参与者（含 host 本机）都使用同一张表单连接。
 
 分享串必须保持当前 background 生成的形态：
 
@@ -133,28 +133,19 @@ anytogether://session?host=<host>&port=<wsPort>&session=<sessionId>
 
 `[已实现]` client 支持两种加入方式：把分享串粘贴进 Session ID 输入框（自动解析填充 host/port/session），或点击“粘贴分享”按钮读取剪贴板解析。解析器为 `parseShareString`（popup.js），与 background 生成的分享串严格互逆。
 
-主机当前 tab 不是支持的视频页时，连接仍可建立但资源可能为 `null`；资源卡明确显示“尚未绑定资源，请在支持的视频页打开/刷新”，不得在 popup 添加 URL 输入框。
+连接发起页当前 tab 不是支持的视频页时，连接仍可建立但资源可能为 `null`；资源卡明确显示“尚未绑定资源，请在支持的视频页打开/刷新”，不得在 popup 添加 URL 输入框。
 
-### 4.2 从机模式
+### 4.2 加入与角色分配
 
-| 字段 | 展示与行为 |
-|---|---|
-| 模式 | 选择“从机”；实际加入成功后仍以 authority 回传 role 为准。 |
-| 主机地址 | 必填；接受 hostname/IP，不偷偷改写为 localhost。 |
-| 端口 | 默认 `8765`，范围 1–65535。 |
-| Session ID | 必填；使用主机分享的 Session ID。保留 host/port/session 三项以匹配当前协议与 background。 |
-| 参与者 ID | 可选；留空由 background 生成。 |
-| 首要 CTA | 未连接为“加入会话”；提交后显示“正在连接主机…”，锁定重复提交。 |
-| 本机获取/复制 | 隐藏；client 不读取本机 Session API，也不生成分享串。 |
+加入请求不携带视频 URL/资源身份；加入成功后接受权威 `state.resourceIdentity`，background 在当前或可复用 tab 打开目标页面。页面尚未就绪时显示等待状态，不提供“打开 URL”替代入口。
 
-从机 join 不携带视频 URL/资源身份；加入成功后接受权威 `state.resourceIdentity`，background 在当前或可复用 tab 打开目标页面。页面尚未就绪时显示等待状态，不提供“打开 URL”替代入口。
+角色由权威分配并以 `join-accepted.role` 回显：先加入者为 host，后续加入者为 client；popup 显示实际分配结果。host 在弹窗中审批后续加入请求：多个请求可并发待审，审批卡逐个展示并标注队列数量；待审批加入者断开时权威推送 `join-request-withdrawn`，host 撤下对应卡片。
 
-### 4.3 角色冲突与实际角色
+### 4.3 角色冲突文案
 
-- 空会话 + `roleHint=client`：显示错误“此会话需要先由主机创建，请在创建者设备选择主机”，保留填写内容，CTA 为“切换为主机”或“重试”；不自动把 client 改成 host。
-- 已有 host + `roleHint=host`：显示“此会话已有主机，请切换为从机”，保留 Session ID；不自动降级为 client。
-- `join-accepted.role` 与选择不同：显示一次确认性 notice“已按会话权威分配为主机/从机”，实际角色徽章和后续权限只使用回传 role。
-- legacy join 缺少 `roleHint`：维持协议兼容；首位仍显示 host，第二位显示 client。Popup 自身的新请求总是发送当前选择的 hint。
+- 会话已有 host 时以 host 身份加入：显示“此会话已有主机，请切换为从机”，保留 Session ID。
+- 空会话以 client 身份加入：显示“此会话需要先由主机创建，请在创建者设备选择主机”。
+- 错误文案按稳定 `code/reason` 映射，不解析服务端英文 `message`；`join-accepted.role` 是实际角色的唯一来源。
 
 ## 5. 连接呈现状态机
 
@@ -172,8 +163,8 @@ anytogether://session?host=<host>&port=<wsPort>&session=<sessionId>
 | `disconnected` 未连接 | 明确断开、无活动 socket | “未连接” / “选择角色并填写必要信息” | 主按钮：主机“连接并创建会话”，从机“加入会话” |
 | `connecting` 连接中 | API 读取、WS 建连、等待 join 结果 | “连接中…” / “请保持此窗口打开，正在完成加入” | 主按钮禁用；模式和配置锁定；不重复提交 |
 | `connected` 已连接 | join accepted 后、尚未有就绪快照 | “已连接” / “正在读取会话状态” | 只显示“断开”次要按钮；自动进入 waiting/ready/degraded |
-| `waiting` 等待就绪 | ready=false 且 reason 为 `awaiting-second-participant` 或 `awaiting-actual-state` | 按 reason 显示“等待第二位参与者加入”或“等待双方回报当前页面状态” | 不提供播放控制；参与者/资源卡解释缺什么 |
-| `ready` 已就绪 | `session-status.ready === true` | “已就绪” / “双方状态一致；播放请使用视频页原生播放器” | 只读；“断开”为次要操作 |
+| `waiting` 等待就绪 | ready=false 且 reason 为 `awaiting-second-participant` 或 `awaiting-actual-state` | 按 reason 显示“等待第二位参与者加入”或“等待各参与者回报当前页面状态” | 不提供播放控制；参与者/资源卡解释缺什么 |
+| `ready` 已就绪 | `session-status.ready === true` | “已就绪” / “所有参与者状态一致；播放请使用视频页原生播放器” | 只读；“断开”为次要操作 |
 | `degraded` 需要检查 | 诊断失配、资源/适配器不一致或权威 phase=error | “需要检查同步” / 展示具体诊断摘要，不用“正常”掩盖失配 | 保留连接；打开诊断抽屉查看 expected/actual；必要时按页面提示恢复 |
 | `error` 连接失败 | 本机 API、WS、join reject 或不可恢复连接错误 | “连接失败” / 稳定 reason 的可操作中文说明 | 主按钮“重试连接”；保留字段；必要时另有“切换模式”；不能显示假装已连接 |
 
@@ -242,7 +233,7 @@ Header 的“更多设置”打开同一 popup 内的面板（窄宽度时全宽
 1. 严重性图标 + `code` 映射：`desync`（状态不同步）、`actual-state-mismatch`（资源/适配器或实际状态不匹配）、`participant-left`（参与者离开）。
 2. 参与者、`stateRevision`、detail。
 3. expected / actual：phase、位置、倍速；若有 `resource`，分别显示 expected/actual adapter 与 canonical URL。
-4. 恢复建议：重新确认双方在正确资源页、等待页面回报；连接级错误使用“重试连接”。建议不能声称 popup 已替用户修复。
+4. 恢复建议：重新确认各参与者在正确资源页、等待页面回报；连接级错误使用“重试连接”。建议不能声称 popup 已替用户修复。
 
 `session-status.reason` 显示为辅助诊断：`awaiting-second-participant`、`awaiting-actual-state`、`actual-state-desync`；不要把 machine code 丢失在泛化的“未知错误”中。
 
@@ -253,7 +244,7 @@ Header 的“更多设置”打开同一 popup 内的面板（窄宽度时全宽
 首屏渐进披露：连接成功后（connected/waiting/ready/degraded）主配置卡自动隐藏，只读会话卡领先；断开、出错、重试时恢复显示。
 
 - **当前实现**：连接/断开、Session 获取与复制、分享串解析（粘贴或剪贴板）、参与者审批、只读状态/phase/position/diagnostic、本地视频运行时授权卡、资源卡精简（站点/状态·倍速/位置·时长）。
-- **未来能力**：多于两名参与者、多资源会话、自动公网发现/NAT、账号和聊天。未有协议与实现前只可作为说明，不能出现在首要 CTA。
+- **未来能力**：多资源会话、自动公网发现/NAT、账号和聊天。未有协议与实现前只可作为说明，不能出现在首要 CTA。
 
 ## 8. 空、加载、错误与恢复文案
 
@@ -296,7 +287,7 @@ Header 的“更多设置”打开同一 popup 内的面板（窄宽度时全宽
 
 - [ ] 所有颜色、间距、字号、圆角来自 token；无纯黑/纯白、渐变、魔法像素或组件内硬编码状态色。
 - [ ] 每个状态同时有图标、文字和辅助说明；列表不以颜色单独表达 reported/consistent。
-- [ ] 参与者最多两人，pending join 不冒充已加入；审批卡只对 host 显示。
+- [ ] 参与者列表逐人展示 reported/consistent，pending join 不冒充已加入；审批卡只对 host 显示，多个待审批请求逐个展示并标注队列。
 - [ ] 资源/播放卡全程只读，显示 phase、投影位置、时长、速率、revision；明确播放控制在原生视频页完成。
 - [ ] 诊断抽屉只展示最新 diagnostic 的 code/detail/expected/actual；未提供不存在的自动修复或真实 Chrome 验证结论。
 - [ ] 空、加载、API/WS/join 失败、未绑定资源、等待审批、断开均有明确可恢复路径。

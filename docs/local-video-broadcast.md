@@ -37,7 +37,7 @@
 
 ### 2.2 当前可验证范围
 
-第 1–4 步已经在 Node/扩展代码层闭环：CLI 生成并绑定 token URL；双方收到权威 `local-video` identity；未授权时 popup 请求当前 `http://<lan-ip>:<port>/*` 权限；用户允许后 background 路由当前 tab，并动态注入通用 `identity.js + content.js`。真实 Chrome/双设备播放仍是 `[未验证]`，不得以 Node fake page 测试替代实机证据。
+第 1–4 步已经在 Node/扩展代码层闭环：CLI 生成并绑定 token URL；各端收到权威 `local-video` identity；未授权时 popup 请求当前 `http://<lan-ip>:<port>/*` 权限；用户允许后 background 路由当前 tab，并动态注入通用 `identity.js + content.js`。真实 Chrome/双设备播放仍是 `[未验证]`，不得以 Node fake page 测试替代实机证据。
 
 ## 3. URL 与令牌契约
 
@@ -227,7 +227,7 @@ node dist/src/cli/host.js 8765
 1. 在主机运行 `node dist/src/cli/host.js 8765 --share /绝对路径/video.mp4`。
 2. 主机和从机都加载/重新加载 MV3 扩展；主机 popup 选择“主机”并连接本机 Session，从机 popup 选择“从机”并填写主机 LAN IP、WS 端口和 Session ID。
 3. 从机收到本地 URL 后，在 popup 点击“允许并继续同步”；两端等待页面加载和就绪状态。
-4. 在任一端原生播放器执行 play/pause/seek/rate，记录双方收敛、Range 请求、防火墙和编解码器结果。
+4. 在任一端原生播放器执行 play/pause/seek/rate，记录各端收敛、Range 请求、防火墙和编解码器结果。
 5. 若实机发现问题，只修复对应扩展/媒体边界；不把真实 Chrome/双设备结果用 Node 测试替代。
 
 未来 PDF 仍复用 tokenized 字节服务，但需要另行评审 `sync-item` 标量协议。

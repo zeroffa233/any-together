@@ -19,7 +19,7 @@
 
 ## 1. 现状基线（Phase 0 起点，全部 `[已落地]`）
 
-- **核心**：TypeScript + Node.js + `ws`。`SessionAuthority`（创建者权威、双人上限、命令去重、单调 sequence/stateRevision、快照防回退、资源身份校验、host-only resource-bind、就绪判定、漂移诊断）；`SessionApi`（只读 `GET /api/session`、`/health`，仅监听 127.0.0.1）；`playback-state` 纯状态机（媒体状态机、位置投影 `projectPlaybackPosition`、`isPhaseAdvancing`）。
+- **核心**：TypeScript + Node.js + `ws`。`SessionAuthority`（创建者权威、多人排队审批、命令去重、单调 sequence/stateRevision、快照防回退、资源身份校验、host-only resource-bind、就绪判定、漂移诊断）；`SessionApi`（只读 `GET /api/session`、`/health`，仅监听 127.0.0.1）；`playback-state` 纯状态机（媒体状态机、位置投影 `projectPlaybackPosition`、`isPhaseAdvancing`）。
 - **CLI**：`host.ts`（默认端口 8765、`--session-id` 固定会话 ID、无 URL 启动为未绑定、枚举局域网地址、`--auto-accept` 仅供自动冒烟）；`client.ts`（`ws://<address>:<port> <session-id> <participant-id> [bilibili-url]`）；`smoke-lan`（同机双客户端真实 socket）、`smoke-process`（两个独立进程）。
 - **适配器层**：`ResourceAdapter` 语义契约（identifyResource/selectTarget/readState/applyState/subscribe；不存 session/revision/command）；`AdapterRegistry` + `SyncerRegistration`（adapterId/name/domain/urlRule/create/capabilities；同 adapterId/domain 冲突注册失败；未知 URL resolve 为 undefined；最长域名匹配优先）；站点适配器 `BilibiliAdapter`、`YoutubeAdapter`、`MissavAdapter`、`PornhubAdapter`、`XvideosAdapter`；标量核心 `src/core/sync-items.ts`（共享标量项绑定/意图纯状态机，见 §7 与 protocol.md §10）。
 - **扩展**：MV3。`identity.js` 是浏览器侧唯一身份注册表（register/resolve/deriveIdentity/identityEqual/isSupportedUrl/list，内置 bilibili、youtube、missav、pornhub、xvideos、local-video（动态 LAN IPv4/localhost 通配）、arxiv-pdf（含 `pdf.scroll`/`pdf.zoom` 标量声明）七个注册项）；`background.js` 服务worker（本机 API 取会话信息、tab 路由覆盖当前页、串行 apply 管线、本地视频运行时权限申请与动态脚本注入、客户端就绪后同 tab 自动刷新一次、keepalive、新窗口接管）；`content.js` 页面代理（SPA 安全 refresh 循环、700ms 意图回声抑制、实际状态回报、有界漂移上报、PDF 标量读写与节流）；`popup` 只做主从模式/连接/审批/只读状态/本地视频授权，无播放控制按钮，无手动 URL 输入。
@@ -75,15 +75,15 @@ AnyTogether 不是"视频同步框架"，而是"网页资源同步框架"。可�
 
 ### 4.1 目标
 
-把当前 Bilibili 双人局域网同步从"机制可证明"推进到"真实环境可用"：稳定性收口 + 补齐真实环境验证缺口。本阶段不增加资源类型。
+把当前 Bilibili 多人局域网同步从"机制可证明"推进到"真实环境可用"：稳定性收口 + 补齐真实环境验证缺口。本阶段不增加资源类型。
 
 ### 4.2 用户流程（现状，`[已落地]`）
 
-1. 主机启动 Node 伴随进程；popup 默认主机模式，固定 127.0.0.1，通过本机 API 获取 Session ID 并复制连接串。
-2. 主机在 Bilibili 视频页连接；当前页面由同步器自动识别并绑定为会话资源（无手动 URL）。
-3. 从机输入主机地址/端口/会话 ID 加入；主机 popup 接受/拒绝。
-4. 从机收到资源身份，扩展在当前或新 tab 覆盖打开目标页面；页面同步器注册并报告就绪。
-5. 双方用原生播放器控制播放/暂停/拖动/倍速；两端在 1 秒内进入同一状态，播放中漂移收敛在 250ms 基线内；缓冲/结束/错误显式报告。
+1. host 启动 Node 伴随进程（CLI），启动后打印分享串；本机 API 提供只读会话信息。
+2. host 在 Bilibili 视频页连接；当前页面由同步器自动识别并绑定为会话资源（无手动 URL）。
+3. 其他参与者粘贴分享串加入；host 在弹窗中逐个审批加入请求。
+4. 加入者收到资源身份，扩展在当前或新 tab 覆盖打开目标页面；页面同步器注册并报告就绪。
+5. 各端用原生播放器控制播放/暂停/拖动/倍速；全部参与者在 1 秒内进入同一状态，播放中漂移收敛在 250ms 基线内；缓冲/结束/错误显式报告。
 
 ### 4.3 核心模型变化
 
@@ -116,7 +116,7 @@ AnyTogether 不是"视频同步框架"，而是"网页资源同步框架"。可�
 ### 4.7 非目标
 
 - 不做新站点适配器（YouTube 属于 Phase 1，本波次作为 Phase 1 开头交付）。
-- 不做播放控制 UI、手动 URL、公网/中继、账号体系、多于两人。
+- 不做播放控制 UI、手动 URL、公网/中继、账号体系。
 - 不做跨源 iframe / shadow DOM / WebAudio / canvas 覆盖（防御图谱中除已验证项外全部 `[需评审]`）。
 
 ### 4.8 建议 issue/PR 拆分
@@ -246,13 +246,13 @@ AnyTogether 不是"视频同步框架"，而是"网页资源同步框架"。可�
 
 ### 7.1 目标
 
-首次落地标量同步：两人共同阅读同一 arXiv PDF，滚动位置与缩放级别收敛。这是统一抽象从 playhead 推广到 scalar 的验证阶段，也是"一起读文章"资源类型的开端。
+首次落地标量同步：多名参与者共同阅读同一 arXiv PDF，滚动位置与缩放级别收敛。这是统一抽象从 playhead 推广到 scalar 的验证阶段，也是"一起读文章"资源类型的开端。
 
 ### 7.2 用户流程
 
 1. 主/从任意一端打开 arXiv 论文页并绑定为共享资源（与视频完全同构的流程）。
 2. 任一端滚动或缩放，另一端以有界延迟跟随到同一位置/缩放。
-3. 两端阅读位置持续收敛（滚动为共享标量）；`[需评审]` 可选：双方各自阅读位置以在场态叠加显示（presence 首次落地）。
+3. 各端阅读位置持续收敛（滚动为共享标量）；`[需评审]` 可选：各参与者的阅读位置以在场态叠加显示（presence 首次落地）。
 
 ### 7.3 核心模型变化（已落地）
 

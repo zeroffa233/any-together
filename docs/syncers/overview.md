@@ -103,7 +103,7 @@ sequenceDiagram
 - 每次 `applyIntent` 使 `stateRevision`/`lastSequence` 各 +1；`state` 广播推动两端施加。
 - 每条客户端连接在加入前独立估算 VPS 时钟偏移；服务端锚点转换到客户端时钟后才允许页面投影，设备间绝对时间不直接相减。
 - content.js 只接受**严格更新**的权威状态（revision 守卫），且与当前页面资源不匹配时拒绝执行（身份守卫）。
-- 实际状态报告在**当前 revision** 上做一致性判定；`session-status.ready` 要求双方均已上报且无阻断问题。
+- 实际状态报告在**当前 revision** 上做一致性判定；`session-status.ready` 要求全体参与者均已上报且无阻断问题。
 
 ## 4. 术语表
 
@@ -123,7 +123,7 @@ sequenceDiagram
 | `SyncerRegistration` | 注册表条目：`{ adapterId, name?, domain, urlRule?, create(page), capabilities }`。 |
 | `AdapterSiteError` | 页面级显式失败（`code: 'invalid-url'\|'not-bilibili'\|'browser-required'\|'no-media'`），由 identify/select/read 抛出。 |
 | `AdapterRegistryError` | 注册期失败（`'duplicate-adapter'\|'duplicate-domain'\|'invalid-registration'\|'invalid-rule'`），resolve 永不抛。 |
-| 参与者 / host / client | 会话最多 2 人：先加入者为 host（创建者/权威审批者），后加入者为 client；`roleHint` 仅建议，最终由权威裁决。 |
+| 参与者 / host / client | 会话由一名 host 与任意数量 client 组成：先加入者为 host（创建者/权威审批者），后续加入者为 client；`roleHint` 仅建议，最终由权威裁决。 |
 | `stateRevision` / `lastSequence` | 每次成功施加意图或资源绑定各 +1，严格单调；`lastCommandId` 记录已应用命令用于幂等。 |
 | 投影（projection） | `'playing'` 相位下按 `positionSeconds + (now − positionAtMs)/1000 × playbackRate` 外推当前位置；其他相位冻结锚点。`now` 与锚点必须在同一时钟域：VPS 内部使用 VPS 时钟，客户端先按连接偏移转换为本地时钟。 |
 | 绑定（bind） | `resource-bind` 把会话绑定到某 `ResourceIdentity`；绑定前会话无资源（identity 为 null），播放意图被拒（`resource-unbound`）。 |
@@ -133,7 +133,7 @@ sequenceDiagram
 - `[当前实现]` 内置同步器有 **Bilibili**（`/video`、`/video/...` 页面）与 **YouTube**（`/watch` 且 query 含非空 `v=` 参数）两个；浏览器 manifest 只注入这两类资源页。
 - `[当前实现]` 同步语义仅覆盖**单一媒体的相位/位置/速率/时长**；不包含滚动、PDF、播放列表等非媒体标量。
   `[未来能力]` 多资源/非媒体标量需要新的身份与状态扩展，当前协议与一致性判定均为“单资源、媒体相位”设计。
-- `[当前实现]` 仓库内验证手段是 Node 单元/集成测试（`npm test`，当前 255/255 通过）与冒烟脚本（`npm run smoke:process` / `smoke:lan`）、扩展静态检查。
+- `[当前实现]` 仓库内验证手段是 Node 单元/集成测试（`npm test`，当前 257/257 通过）与冒烟脚本（`npm run smoke:process` / `smoke:lan` / `smoke:multi`）、扩展静态检查。
   Node 侧注册表与两个适配器的语义由测试验证；浏览器侧（identity.js 注册、manifest 注入范围、content.js 驱动）只经过扩展静态检查与 Node 侧同构规则测试。
 - **真实浏览器验证边界**：真实 Chrome（macOS/Windows）实机与跨设备同步验证**尚未执行**（含 YouTube），本文档不宣称任何实机验证结果；
   真实浏览器验证属于提交流程的一部分（见 authoring.md §8），提交时须注明实际测过的平台，未测平台不得宣称。
