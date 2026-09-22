@@ -64,15 +64,16 @@ AnyTogether 是一个面向熟人多人场景的自托管同步工具。Node.js 
 
 ## 快速开始
 
-### 要求
+AnyTogether 在架构上分为两端：
 
-- Node.js 22 或更高版本
-- npm
-- Chrome、Chromium 或 Brave
-- macOS / Linux 使用交互式脚本时需要 POSIX shell
-- 可选的 `curl`，只用于探测公网出口 IPv4
+- **服务端**：Node.js 伴随进程（CLI）。它是唯一的权威状态机，负责裁决播放意图、资源切换和一致性校验。部署在其中一位参与者的电脑或服务器上。
+- **客户端**：浏览器扩展。每位参与者在自己的 Chrome 中加载扩展，由它识别页面、转发原生播放操作、把权威状态施加回页面。
 
-### 准备项目
+所有客户端必须能通过网络访问服务端：局域网直接互通；公网部署时在服务端防火墙放行 WebSocket 端口。
+
+### 服务端：安装与运行
+
+要求 Node.js 22 或更高版本与 npm（可选的 `curl` 只用于探测公网出口 IPv4）：
 
 ```console
 $ git clone https://github.com/zeroffa233/any-together.git
@@ -81,34 +82,9 @@ $ npm run setup
 $ npm run doctor
 ```
 
-`npm run setup` 会安装缺失依赖、编译 TypeScript、创建本地配置并准备扩展目录。`npm run doctor` 检查 Node 版本、依赖、配置和扩展文件。
+`npm run setup` 安装缺失依赖、编译 TypeScript、创建本地配置并准备扩展目录；`npm run doctor` 检查 Node 版本、依赖、配置和扩展文件。
 
-### 安装扩展
-
-自动准备扩展并启动独立浏览器配置：
-
-```console
-$ npm run extension:install
-```
-
-手动安装：
-
-1. 打开 `chrome://extensions`。
-2. 开启“开发者模式”。
-3. 点击“加载已解压的扩展程序”。
-4. 选择仓库中的 `extension/`；也可以先运行 `npm run extension:prepare`，再选择 `.any-together/extension/`。
-
-所有参与者的浏览器都要安装扩展。其他设备可以克隆仓库，也可以只复制准备好的扩展目录。
-
-### 启动会话
-
-macOS / Linux 可以使用交互式启动器：
-
-```console
-$ ./any-together.sh
-```
-
-也可以直接给出端口和会话名称：
+启动会话，macOS / Linux 可以使用交互式启动器：
 
 ```console
 $ ./any-together.sh --port 8765 --name movie-night
@@ -129,21 +105,34 @@ $ ./any-together.sh
 
 每个字段都按“命令行参数 > `.yml` > 内置默认值”解析。当前目录出现多个 `.yml` 时程序会拒绝猜测；使用 `--config <path.yml>` 明确选择，或通过 npm 包装器传入 `--host-config <path.yml>`。
 
-会话 ID 默认使用随机 UUID。`--name` 是不含空白的易读别名。CLI 启动后会打印完整分享串：
+会话 ID 默认使用随机 UUID。`--name` 是不含空白的易读别名。CLI 启动后会打印完整分享串，把它发给所有参与者：
 
 ```text
 anytogether://session?host=<host>&port=<port>&session=<session-id>
 ```
 
+### 客户端：安装扩展
+
+扩展不上架应用商店，需要在 Chrome 中以“加载已解压的扩展程序”方式导入。扩展目录是仓库中的 `extension/`；客户端设备不需要安装 Node，也不需要克隆整个仓库——把 `extension/` 目录复制到客户端设备即可，host 可以把这个目录打包发给其他参与者。
+
+在 Chrome 中导入扩展：
+
+1. 打开扩展管理页 `chrome://extensions`。
+2. 打开右上角的“开发者模式”开关。
+3. 点击“加载已解压的扩展程序”，选择 `extension/` 目录。
+4. 在扩展列表中确认 AnyTogether 已启用，建议固定到工具栏。
+
+Chromium 和 Brave 的步骤相同。扩展代码更新后，回到 `chrome://extensions` 点击“重新加载”。
+
 ### 连接参与者
 
-1. 第一位参与者打开受支持的资源页。
+1. 每位参与者打开受支持的资源页。
 2. 打开扩展，把 CLI 打印的完整分享串粘贴到输入框，然后连接。
-3. 把同一分享串发给其他参与者。
-4. 其他参与者连接后，host 在弹窗中逐个审批加入请求。
-5. 等待弹窗显示“已就绪”，然后直接操作页面原生播放器。
+3. host 在弹窗中逐个审批其他参与者的加入请求。
+4. 等待弹窗显示“已就绪”，然后直接操作页面原生播放器。
 
 分享串已经包含地址、端口和 Session ID。没有分享串时，可以展开“高级配置”，手动填写地址、端口以及 Session ID 或会话名称。
+
 
 ## 共享本地视频
 
