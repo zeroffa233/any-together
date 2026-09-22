@@ -151,7 +151,8 @@ export class SessionAuthority {
   /** Latest actual-state report per joined participant, keyed by socket. */
   private readonly reports = new Map<WebSocket, ParticipantReport>();
   private readonly processedCommands = new Set<string>();
-  private pendingJoin: PendingJoin | undefined;
+  /** Pending join requests awaiting the host decision, keyed by participantId. */
+  private readonly pendingJoins = new Map<string, PendingJoin>();
   private lastResyncAtMs = 0;
   private lastStatusKey: string | undefined;
   /** In-flight resource switch: null when stable, target+since while navigating. */
@@ -238,10 +239,8 @@ export class SessionAuthority {
     this.participants.clear();
     // An unapproved joiner holds a live connection outside `participants`; it
     // must be terminated too, or server.close() waits on it and stop() hangs.
-    if (this.pendingJoin) {
-      this.pendingJoin.socket.terminate();
-      this.pendingJoin = undefined;
-    }
+    for (const pending of this.pendingJoins.values()) pending.socket.terminate();
+    this.pendingJoins.clear();
     const { promise, resolve, reject } = Promise.withResolvers<void>();
     server.close((error) => (error ? reject(error) : resolve()));
     await promise;
@@ -268,20 +267,40 @@ export class SessionAuthority {
       void this.handleMessage(socket, raw, receivedAtMs);
     });
     socket.on('close', () => {
-      // A pending joiner that gives up frees its slot silently; the host never
-      // receives a decision for a gone joiner.
-      if (this.pendingJoin?.socket === socket) this.pendingJoin = undefined;
+      // A pending joiner that gives up frees its slot silently on the wire,
+      // but the host is notified so its approval card cannot decide a gone
+      // joiner or block the requests queued behind it.
+      const withdrawn: string[] = [];
+      for (const [joinerId, pending] of this.pendingJoins) {
+        if (pending.socket === socket) {
+          this.pendingJoins.delete(joinerId);
+          withdrawn.push(joinerId);
+        }
+      }
+      if (withdrawn.length > 0) {
+        // A pending joiner is never in `participants`, so this runs before the
+        // participant guard below. The host must learn the request vanished so
+        // its approval card cannot decide a gone joiner or block the requests
+        // queued behind it.
+        const host = this.findHost();
+        if (host) {
+          for (const joinerId of withdrawn) {
+            this.send(host.socket, { type: 'join-request-withdrawn', participantId: joinerId });
+          }
+        }
+      }
       const participant = this.participants.get(socket);
       if (!participant) return;
       this.participants.delete(socket);
       this.reports.delete(socket);
-      // If the host leaves while a join request is pending, no one can decide:
-      // reject the pending joiner explicitly instead of leaving it hanging.
-      if (participant.role === 'host' && this.pendingJoin) {
-        const abandoned = this.pendingJoin;
-        this.pendingJoin = undefined;
-        this.send(abandoned.socket, { type: 'join-rejected', reason: 'host-unavailable' });
-        abandoned.socket.close(1008, 'host-unavailable');
+      // If the host leaves while join requests are pending, no one can decide:
+      // reject every pending joiner explicitly instead of leaving them hanging.
+      if (participant.role === 'host' && this.pendingJoins.size > 0) {
+        for (const pending of this.pendingJoins.values()) {
+          this.send(pending.socket, { type: 'join-rejected', reason: 'host-unavailable' });
+          pending.socket.close(1008, 'host-unavailable');
+        }
+        this.pendingJoins.clear();
       }
       this.broadcast({
         type: 'diagnostic',
@@ -412,7 +431,7 @@ export class SessionAuthority {
     // conditions would apply. roleHint remains advisory for role ASSIGNMENT:
     // the authority still grants the first participant the host role and the
     // second the client role and echoes the decision in join-accepted.role.
-    const hasHost = this.pendingJoin !== undefined
+    const hasHost = this.pendingJoins.size > 0
       || [...this.participants.values()].some((participant) => participant.role === 'host');
     if (roleHint === 'client' && this.participants.size === 0) {
       this.send(socket, { type: 'join-rejected', reason: 'host-required' });
@@ -424,15 +443,10 @@ export class SessionAuthority {
       socket.close(1008, 'host-already-exists');
       return;
     }
-    // A pending join occupies a seat: the session holds at most two participants.
-    const occupied = this.participants.size + (this.pendingJoin === undefined ? 0 : 1);
-    if (occupied >= 2) {
-      this.send(socket, { type: 'join-rejected', reason: 'session-full' });
-      socket.close(1008, 'session-full');
-      return;
-    }
+    // Any number of participants is supported; the second and later joiners
+    // simply become clients once the host approves them.
     const duplicateId = [...this.participants.values()].some((participant) => participant.id === participantId)
-      || this.pendingJoin?.participantId === participantId;
+      || this.pendingJoins.has(participantId);
     if (!participantId || duplicateId) {
       this.send(socket, { type: 'join-rejected', reason: 'duplicate-or-empty-participant-id' });
       socket.close(1008, 'invalid-participant-id');
@@ -484,17 +498,18 @@ export class SessionAuthority {
       return;
     }
 
-    // The second participant must be approved by the host before joining.
-    this.pendingJoin = {
+    // Later participants must be approved by the host before joining; several
+    // requests may pend at once and each is decided by joiner id.
+    this.pendingJoins.set(participantId, {
       socket,
       participantId,
       ...(resourceIdentity === undefined ? {} : { resourceIdentity }),
-    };
+    });
     const host = this.findHost();
     if (!host) {
       // Defensive: no host exists to decide (it left mid-session). The pending
-      // slot is released and the joiner is rejected explicitly.
-      this.pendingJoin = undefined;
+      // entry is released and the joiner is rejected explicitly.
+      this.pendingJoins.delete(participantId);
       this.send(socket, { type: 'join-rejected', reason: 'no-host-available' });
       socket.close(1008, 'no-host-available');
       return;
@@ -516,12 +531,26 @@ export class SessionAuthority {
       this.send(socket, { type: 'error', code: 'not-host', message: 'Only the host may decide join requests' });
       return;
     }
-    const pending = this.pendingJoin;
-    if (!pending) {
-      this.send(socket, { type: 'error', code: 'no-pending-join', message: 'There is no join request awaiting a decision' });
+    // A decision targets the joiner named by `joinerId`. When omitted (legacy
+    // clients) it applies to the only pending request; with several pending
+    // requests the authority refuses to guess.
+    const joinerId = decision.joinerId
+      ?? (this.pendingJoins.size === 1 ? [...this.pendingJoins.keys()][0] : undefined);
+    const pending = joinerId === undefined ? undefined : this.pendingJoins.get(joinerId);
+    if (joinerId === undefined || pending === undefined) {
+      // No joinerId with an empty queue is a plain no-pending-join; only an
+      // unnamed decision among SEVERAL pending requests is ambiguous.
+      const ambiguous = decision.joinerId === undefined && this.pendingJoins.size > 1;
+      this.send(socket, {
+        type: 'error',
+        code: ambiguous ? 'ambiguous-join-decision' : 'no-pending-join',
+        message: ambiguous
+          ? 'Multiple join requests are pending; name the joinerId to decide'
+          : 'There is no pending join request awaiting a decision',
+      });
       return;
     }
-    this.pendingJoin = undefined;
+    this.pendingJoins.delete(joinerId);
     if (!decision.accepted) {
       this.send(pending.socket, { type: 'join-rejected', reason: 'host-declined' });
       pending.socket.close(1008, 'host-declined');

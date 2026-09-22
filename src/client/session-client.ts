@@ -234,13 +234,14 @@ export class SessionClient {
   }
 
   /** Hosts decide the pending join request; non-hosts are rejected by the authority. */
-  sendJoinDecision(accepted: boolean): void {
+  sendJoinDecision(accepted: boolean, joinerId?: string): void {
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Session client is not connected');
     const decision: ClientMessage = {
       type: 'join-decision',
       participantId: this.options.participantId,
       accepted,
+      ...(joinerId === undefined ? {} : { joinerId }),
     };
     socket.send(JSON.stringify(decision));
   }

@@ -58,7 +58,7 @@ const PHASE_LABELS = {
 
 const REASON_LABELS = {
   'awaiting-second-participant': '等待第二位参与者加入',
-  'awaiting-actual-state': '等待双方回报当前页面状态',
+  'awaiting-actual-state': '等待各参与者回报当前页面状态',
   'actual-state-desync': '实际状态不同步',
 };
 
@@ -74,7 +74,6 @@ const DIAGNOSTIC_LABELS = {
 const JOIN_REJECT_LABELS = {
   'host-required': '此会话需要先由主机创建，请在创建者设备选择主机',
   'host-already-exists': '此会话已有主机，请切换为从机',
-  'session-full': '会话已满（最多两名参与者），请让主机创建新会话后重试',
   'duplicate-or-empty-participant-id': '参与者 ID 重复或为空，请更换后重试',
   'resource-mismatch': '提供的资源与会话不一致，请改用与主机相同的视频页',
   'host-declined': '主机拒绝了加入请求',
@@ -234,7 +233,7 @@ function renderBanner() {
       description = REASON_LABELS[currentSessionStatus?.reason] ?? '等待会话就绪';
       break;
     case 'ready':
-      description = '双方状态一致；播放请使用视频页原生播放器';
+      description = '所有参与者状态一致；播放请使用视频页原生播放器';
       break;
     case 'degraded':
       description = lastDiagnostic?.detail
@@ -588,13 +587,15 @@ function updatePlaybackFields() {
 
 // --- join approval (spec §6.2) ------------------------------------------------
 
-function renderPendingJoin(join) {
+function renderPendingJoin(join, pendingCount = 1) {
   pendingJoin = join;
   const card = $('join-approval');
   const show = !!join && lastStatus === 'connected';
   card.hidden = !show;
   if (!show) return;
-  $('join-requester-id').textContent = join.participantId;
+  $('join-requester-id').textContent = pendingCount > 1
+    ? `${join.participantId}（另有 ${pendingCount - 1} 人待审批）`
+    : join.participantId;
   const identity = join.resourceIdentity;
   $('join-requester-resource').textContent = identity
     ? `${ADAPTER_LABELS[identity.adapterId] ?? identity.adapterId} · ${identity.canonicalUrl}`
@@ -713,8 +714,8 @@ function renderDiagnosticDrawer() {
   const recovery = document.createElement('p');
   recovery.className = 'recovery';
   recovery.textContent = d.code === 'participant-left'
-    ? '恢复建议：等待第二位参与者加入；若无法加入，可断开后重新建立会话。'
-    : '恢复建议：重新确认双方打开同一视频页并等待页面回报；必要时在视频页操作一次以触发重新上报。';
+    ? '恢复建议：等待其他参与者加入；若无法加入，可断开后重新建立会话。'
+    : '恢复建议：重新确认各参与者打开同一视频页并等待页面回报；必要时在视频页操作一次以触发重新上报。';
   body.appendChild(recovery);
 }
 
@@ -809,7 +810,7 @@ async function init() {
     }
     renderStatus(reply);
     if (reply.notice) showNotice(reply.notice);
-    if (reply.pendingJoin) renderPendingJoin(reply.pendingJoin);
+    if (reply.pendingJoin) renderPendingJoin(reply.pendingJoin, reply.pendingJoinCount ?? 1);
     renderDiagnosticDrawer();
   } else {
     renderBanner();
@@ -863,7 +864,7 @@ chrome.runtime.onMessage.addListener((message) => {
       showNotice(message.text);
       break;
     case 'join-request':
-      renderPendingJoin(message.join);
+      renderPendingJoin(message.join, message.pendingCount ?? 1);
       break;
     case 'join-request-clear':
       renderPendingJoin(null);

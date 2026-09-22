@@ -16,6 +16,7 @@
     "extension:install": "node scripts/any-together.mjs extension:install",
     "start": "node scripts/any-together.mjs start",
     "smoke:lan": "npm run build && node dist/src/cli/smoke-lan.js",
+    "smoke:multi": "npm run build && node dist/src/cli/smoke-multi.js",
     "smoke:process": "npm run build && node dist/src/cli/smoke-process.js",
     "start:host": "npm run build && node dist/src/cli/host.js",
     "start:client": "npm run build && node dist/src/cli/client.js"

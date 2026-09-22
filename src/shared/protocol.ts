@@ -438,6 +438,12 @@ export type JoinDecision = {
   type: 'join-decision';
   participantId: string;
   accepted: boolean;
+  /**
+   * Optional target joiner. With several pending join requests a decision MUST
+   * name its target; when omitted (legacy clients) the authority applies it to
+   * the only pending request and refuses to guess among several.
+   */
+  joinerId?: string;
 };
 
 export function isJoinDecision(value: unknown): value is JoinDecision {
@@ -446,7 +452,9 @@ export function isJoinDecision(value: unknown): value is JoinDecision {
   return candidate.type === 'join-decision'
     && typeof candidate.participantId === 'string'
     && candidate.participantId.length > 0
-    && typeof candidate.accepted === 'boolean';
+    && typeof candidate.accepted === 'boolean'
+    && (candidate.joinerId === undefined
+      || (typeof candidate.joinerId === 'string' && candidate.joinerId.length > 0));
 }
 
 export type SyncItemBindMessage = {
@@ -523,6 +531,24 @@ export function isJoinRequestMessage(value: unknown): value is JoinRequestMessag
   if (typeof candidate.participantId !== 'string' || candidate.participantId.length === 0) return false;
   if (candidate.resourceIdentity === undefined) return true;
   return isValidResourceIdentity(candidate.resourceIdentity);
+}
+
+/**
+ * Sent to the host when a PENDING joiner disconnects before a decision: the
+ * host must drop that approval card instead of deciding a gone joiner. The
+ * participant id names the withdrawn joiner.
+ */
+export type JoinRequestWithdrawnMessage = {
+  type: 'join-request-withdrawn';
+  participantId: string;
+};
+
+export function isJoinRequestWithdrawnMessage(value: unknown): value is JoinRequestWithdrawnMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'join-request-withdrawn'
+    && typeof candidate.participantId === 'string'
+    && candidate.participantId.length > 0;
 }
 
 export type JoinAcceptedMessage = {
@@ -674,6 +700,7 @@ export type ServerMessage =
   | ClockSyncResponse
   | JoinRejectedMessage
   | JoinRequestMessage
+  | JoinRequestWithdrawnMessage
   | StateMessage
   | SnapshotMessage
   | SessionStatusMessage

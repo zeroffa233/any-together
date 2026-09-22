@@ -71,7 +71,7 @@ const SESSION = {
   latestState: null, // most recent accepted authoritative PlaybackState
   latestStatus: null, // most recent session-status broadcast
   lastDiagnostic: null, // most recent structured diagnostic
-  pendingJoin: null, // join-request awaiting the host decision
+  pendingJoins: new Map(), // join requests awaiting the host decision, keyed by participantId
   nextCommandSeq: 0,
   clientTabId: null, // client mode's apply target; content-ready registrations
   // and tab takeover keep it pointing at the session page
@@ -368,7 +368,7 @@ async function connect(options) {
   SESSION.port = port;
   SESSION.lastError = null;
   SESSION.notice = null;
-  SESSION.pendingJoin = null;
+  SESSION.pendingJoins.clear();
   SESSION.sessionId = sessionId;
 
   const participantId = String(options.participantId ?? '').trim()
@@ -428,7 +428,7 @@ async function connect(options) {
     SESSION.latestState = null;
     SESSION.latestStatus = null;
     SESSION.lastDiagnostic = null;
-    SESSION.pendingJoin = null;
+    SESSION.pendingJoins.clear();
     SESSION.notice = null;
     SESSION.applyQueue = Promise.resolve();
     resetClockSync();
@@ -458,7 +458,7 @@ function disconnect() {
   SESSION.latestState = null;
   SESSION.latestStatus = null;
   SESSION.lastDiagnostic = null;
-  SESSION.pendingJoin = null;
+  SESSION.pendingJoins.clear();
   SESSION.notice = null;
   SESSION.applyQueue = Promise.resolve();
   SESSION.lastError = null;
@@ -518,11 +518,23 @@ function handleServerMessage(raw) {
       // Only the host receives join requests; surface the pending joiner in
       // the popup and wait for a join-decision.
       if (SESSION.role !== 'host' || !message.participantId) break;
-      SESSION.pendingJoin = {
+      SESSION.pendingJoins.set(message.participantId, {
         participantId: message.participantId,
         ...(message.resourceIdentity ? { resourceIdentity: message.resourceIdentity } : {}),
-      };
-      notifyPopup({ type: 'join-request', join: SESSION.pendingJoin });
+      });
+      // The popup decides one request at a time: surface the oldest pending.
+      const oldestJoin = SESSION.pendingJoins.values().next().value;
+      notifyPopup({ type: 'join-request', join: oldestJoin, pendingCount: SESSION.pendingJoins.size });
+      break;
+    }
+    case 'join-request-withdrawn': {
+      // A pending joiner disconnected before a decision: drop its card and
+      // surface the next queued request (or clear the card entirely).
+      if (SESSION.role !== 'host' || !message.participantId) break;
+      if (!SESSION.pendingJoins.delete(message.participantId)) break;
+      const next = SESSION.pendingJoins.entries().next().value;
+      if (next === undefined) notifyPopup({ type: 'join-request-clear' });
+      else notifyPopup({ type: 'join-request', join: next[1], pendingCount: SESSION.pendingJoins.size });
       break;
     }
     case 'state':
@@ -1190,17 +1202,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sendResponse({ ok: false, error: '未连接会话' });
         return undefined;
       }
-      if (SESSION.role !== 'host' || !SESSION.pendingJoin) {
+      const oldest = SESSION.pendingJoins.entries().next().value;
+      if (SESSION.role !== 'host' || oldest === undefined) {
         sendResponse({ ok: false, error: '没有待处理的加入请求' });
         return undefined;
       }
+      const [joinerId] = oldest;
       SESSION.ws.send(JSON.stringify({
         type: 'join-decision',
         participantId: SESSION.participantId,
         accepted: message.accepted === true,
+        joinerId,
       }));
-      SESSION.pendingJoin = null;
-      notifyPopup({ type: 'join-request-clear' });
+      SESSION.pendingJoins.delete(joinerId);
+      const next = SESSION.pendingJoins.entries().next().value;
+      if (next === undefined) notifyPopup({ type: 'join-request-clear' });
+      else notifyPopup({ type: 'join-request', join: next[1], pendingCount: SESSION.pendingJoins.size });
       sendResponse({ ok: true });
       return undefined;
     }
@@ -1225,7 +1242,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         state: SESSION.latestState,
         sessionStatus: SESSION.latestStatus,
         lastDiagnostic: SESSION.lastDiagnostic,
-        pendingJoin: SESSION.pendingJoin,
+        pendingJoin: SESSION.pendingJoins.values().next().value ?? null,
+        pendingJoinCount: SESSION.pendingJoins.size,
         localPermission: SESSION.pendingLocalPermission,
       });
       return undefined;
