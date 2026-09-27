@@ -457,6 +457,29 @@ export function isJoinDecision(value: unknown): value is JoinDecision {
       || (typeof candidate.joinerId === 'string' && candidate.joinerId.length > 0));
 }
 
+/**
+ * Host-only removal of a joined participant. `participantId` identifies the
+ * DECISION MAKER (the host), matching the sender semantics of every other
+ * client message; `targetId` names the participant to remove. Kicking oneself
+ * is refused, and pending (unapproved) joiners are handled by `join-decision`
+ * instead.
+ */
+export type KickMessage = {
+  type: 'kick';
+  participantId: string;
+  targetId: string;
+};
+
+export function isKickMessage(value: unknown): value is KickMessage {
+  if (typeof value !== 'object' || value === null) return false;
+  const candidate = value as Record<string, unknown>;
+  return candidate.type === 'kick'
+    && typeof candidate.participantId === 'string'
+    && candidate.participantId.length > 0
+    && typeof candidate.targetId === 'string'
+    && candidate.targetId.length > 0;
+}
+
 export type SyncItemBindMessage = {
   type: 'sync-item-bind';
   participantId: string;
@@ -515,7 +538,8 @@ export type ClientMessage =
   | ActualStateReport
   | SyncItemBindMessage
   | SyncItemIntent
-  | JoinDecision;
+  | JoinDecision
+  | KickMessage;
 
 /** Sent to the host when a second participant requests to join. */
 export type JoinRequestMessage = {
@@ -642,7 +666,7 @@ export type DiagnosticStateComparison = {
 
 export type DiagnosticMessage = {
   type: 'diagnostic';
-  code: 'desync' | 'participant-left' | 'actual-state-mismatch';
+  code: 'desync' | 'participant-left' | 'actual-state-mismatch' | 'participant-kicked';
   participantId: string;
   detail: string;
   sessionId?: string;
@@ -650,6 +674,12 @@ export type DiagnosticMessage = {
   resource?: DiagnosticResourceComparison;
   expected?: DiagnosticStateComparison;
   actual?: DiagnosticStateComparison;
+  /**
+   * Machine-readable issue kinds behind the diagnostic (e.g. 'stale-report',
+   * 'position-drift'). Optional for wire compatibility with older servers;
+   * consumers use it to grade severity WITHOUT parsing `detail`.
+   */
+  issues?: string[];
 };
 
 export function isDiagnosticMessage(value: unknown): value is DiagnosticMessage {
@@ -657,11 +687,16 @@ export function isDiagnosticMessage(value: unknown): value is DiagnosticMessage 
   const candidate = value as Record<string, unknown>;
   if (candidate.type !== 'diagnostic') return false;
   const code = candidate.code;
-  if (code !== 'desync' && code !== 'participant-left' && code !== 'actual-state-mismatch') return false;
+  if (code !== 'desync' && code !== 'participant-left' && code !== 'actual-state-mismatch'
+    && code !== 'participant-kicked') return false;
   if (typeof candidate.participantId !== 'string' || candidate.participantId.length === 0) return false;
   if (typeof candidate.detail !== 'string') return false;
   if (candidate.sessionId !== undefined && (typeof candidate.sessionId !== 'string' || candidate.sessionId.length === 0)) return false;
   if (candidate.stateRevision !== undefined && !isNonNegativeInteger(candidate.stateRevision)) return false;
+  if (candidate.issues !== undefined) {
+    if (!Array.isArray(candidate.issues)) return false;
+    if (!candidate.issues.every((issue) => typeof issue === 'string' && issue.length > 0)) return false;
+  }
   if (candidate.resource !== undefined) {
     if (typeof candidate.resource !== 'object' || candidate.resource === null) return false;
     const resource = candidate.resource as Record<string, unknown>;

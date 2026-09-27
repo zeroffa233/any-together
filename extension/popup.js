@@ -66,7 +66,21 @@ const DIAGNOSTIC_LABELS = {
   desync: '状态不同步',
   'actual-state-mismatch': '资源/适配器或实际状态不匹配',
   'participant-left': '参与者离开',
+  'participant-kicked': '参与者被房主移出',
 };
+
+// Issue kinds that self-heal on the next actual-state cycle: the report was
+// simply behind the latest revision. The session-status awaiting reason
+// already covers the transition, so they are informational — presenting them
+// as "状态不同步" would claim a desync that the identical expected/actual
+// comparison disproves.
+const TRANSIENT_DIAGNOSTIC_ISSUES = new Set(['stale-report', 'revision-mismatch']);
+
+function isTransientDiagnostic(d) {
+  return d.code === 'desync'
+    && Array.isArray(d.issues) && d.issues.length > 0
+    && d.issues.every((issue) => TRANSIENT_DIAGNOSTIC_ISSUES.has(issue));
+}
 
 // Stable join-rejected reason codes (protocol §2.2) mapped to actionable
 // Chinese copy. The background prefixes these codes as "加入被拒绝: <code>";
@@ -111,6 +125,8 @@ let currentSessionStatus = null; // latest session-status broadcast
 let lastDiagnostic = null; // latest diagnostic (drawer shows only this one)
 let pendingJoin = null;
 let selfParticipantId = null;
+let selfRole = null;
+let resourceTitle = null;
 let submitLock = false; // connect is single-submission until a status frame
 let decisionLock = false; // join accept/reject is single-submission
 let prevStatus = 'disconnected';
@@ -184,6 +200,7 @@ function computeUiState() {
   const liveDesync = currentSessionStatus?.reason === 'actual-state-desync';
   const diagDesync = lastDiagnostic
     && (lastDiagnostic.code === 'desync' || lastDiagnostic.code === 'actual-state-mismatch')
+    && !isTransientDiagnostic(lastDiagnostic)
     && diagnosticSeq > sessionStatusSeq;
   if (liveDesync || diagDesync || phaseError) return 'degraded';
   if (currentSessionStatus?.ready === true) return 'ready';
@@ -366,9 +383,12 @@ function renderStatus(info) {
 
   if (lastStatus === 'connected') {
     selfParticipantId = info.participantId ?? null;
+    selfRole = info.role ?? null;
   } else {
     selfParticipantId = null;
+    selfRole = null;
   }
+  resourceTitle = info.resourceTitle ?? null;
 
   // Reopened popup restores the worker's real target fields for a retry.
   const restorable = lastStatus === 'connected' || lastStatus === 'connecting' || lastStatus === 'error';
@@ -440,6 +460,12 @@ function renderParticipants() {
     idSpan.textContent = p.participantId;
     idSpan.title = p.participantId;
     name.appendChild(idSpan);
+    if (p.role === 'host') {
+      const hostPill = document.createElement('span');
+      hostPill.className = 'pill';
+      hostPill.textContent = '房主';
+      name.appendChild(hostPill);
+    }
     if (selfParticipantId && p.participantId === selfParticipantId) {
       const selfPill = document.createElement('span');
       selfPill.className = 'pill pill-self';
@@ -455,6 +481,22 @@ function renderParticipants() {
     body.appendChild(report);
     li.appendChild(icon);
     li.appendChild(body);
+    // Host moderation: the host may remove any other joined participant.
+    if (selfRole === 'host' && selfParticipantId && p.participantId !== selfParticipantId) {
+      const kickButton = document.createElement('button');
+      kickButton.type = 'button';
+      kickButton.className = 'kick-button';
+      kickButton.textContent = '移出';
+      kickButton.addEventListener('click', () => {
+        kickButton.disabled = true;
+        void send({ type: 'kick', targetId: p.participantId }).then((reply) => {
+          if (reply && reply.ok === false) showError(reply.error ?? '移出失败');
+          // The list re-renders when the authority broadcasts the resulting
+          // session-status / participant-kicked diagnostic.
+        });
+      });
+      li.appendChild(kickButton);
+    }
     list.appendChild(li);
   }
 }
@@ -482,9 +524,10 @@ function renderResourceCard() {
   empty.hidden = true;
   body.hidden = false;
   $('resource-adapter').textContent = ADAPTER_LABELS[identity.adapterId] ?? identity.adapterId;
-  // The resource's own name is the recognizable bit: a BV id, a file name —
-  // fall back to the canonical URL tail when the syncer has no resourceId.
-  $('resource-name').textContent = identity.resourceId
+  // The page title is the recognizable bit (from the syncer's title element);
+  // fall back to the resource id, then to the canonical URL tail.
+  $('resource-name').textContent = resourceTitle
+    ?? identity.resourceId
     ?? (identity.canonicalUrl.split('/').pop() || identity.canonicalUrl);
   updatePlaybackFields();
 }
@@ -673,17 +716,18 @@ function renderDiagnosticDrawer() {
     return;
   }
 
+  const transient = isTransientDiagnostic(d);
   const head = document.createElement('div');
   head.className = 'diagnostic-head';
   const icon = document.createElement('span');
   icon.setAttribute('aria-hidden', 'true');
-  icon.className = d.code === 'participant-left' ? 'status-icon state-connected'
+  icon.className = d.code === 'participant-left' || transient ? 'status-icon state-connected'
     : d.code === 'actual-state-mismatch' ? 'status-icon state-error'
       : 'status-icon state-degraded';
-  icon.textContent = d.code === 'participant-left' ? 'i' : '!';
+  icon.textContent = d.code === 'participant-left' ? 'i' : transient ? '⋯' : '!';
   head.appendChild(icon);
   const title = document.createElement('strong');
-  title.textContent = DIAGNOSTIC_LABELS[d.code] ?? d.code;
+  title.textContent = transient ? '页面回报滞后' : (DIAGNOSTIC_LABELS[d.code] ?? d.code);
   head.appendChild(title);
   const rev = document.createElement('span');
   rev.className = 'muted';
@@ -715,7 +759,9 @@ function renderDiagnosticDrawer() {
   recovery.className = 'recovery';
   recovery.textContent = d.code === 'participant-left'
     ? '恢复建议：等待其他参与者加入；若无法加入，可断开后重新建立会话。'
-    : '恢复建议：重新确认各参与者打开同一视频页并等待页面回报；必要时在视频页操作一次以触发重新上报。';
+    : transient
+      ? '该报告落后于最新修订，页面回报当前状态后会自动恢复；通常无需操作。'
+      : '恢复建议：重新确认各参与者打开同一视频页并等待页面回报；必要时在视频页操作一次以触发重新上报。';
   body.appendChild(recovery);
 }
 
@@ -849,6 +895,10 @@ chrome.runtime.onMessage.addListener((message) => {
       }
       renderDiagnosticDrawer();
       renderBanner();
+      break;
+    case 'resource-title':
+      resourceTitle = message.title ?? null;
+      renderResourceCard();
       break;
     case 'local-permission-request':
       localPermission = message.permission ?? null;

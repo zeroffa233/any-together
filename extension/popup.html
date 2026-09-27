@@ -524,6 +524,23 @@
       border-bottom: 1px solid var(--color-border);
     }
 
+    .kick-button {
+      margin-left: auto;
+      flex: 0 0 auto;
+      align-self: center;
+      border: none;
+      background: none;
+      padding: var(--space-1) var(--space-2);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--color-danger);
+      cursor: pointer;
+    }
+
+    .kick-button:hover {
+      text-decoration: underline;
+    }
+
     .participant-row:last-child {
       border-bottom: 0;
       padding-bottom: 0;
@@ -896,7 +913,7 @@
     </section>
 
     <section id="participants-section" class="card" aria-labelledby="participants-title" hidden>
-      <h2 id="participants-title" class="card-title">参与者（<span id="participants-count">0</span>/2）</h2>
+      <h2 id="participants-title" class="card-title">参与者（<span id="participants-count">0</span>）</h2>
       <ul id="participant-list" class="participant-list"></ul>
       <p id="participants-placeholder" class="placeholder">连接后显示参与者</p>
     </section>

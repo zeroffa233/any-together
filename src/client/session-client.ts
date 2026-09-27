@@ -13,6 +13,7 @@ import type {
   ActualStateReport,
   ClientMessage,
   IntentKind,
+  KickMessage,
   PlaybackIntent,
   PlaybackState,
   ResourceBindMessage,
@@ -244,6 +245,22 @@ export class SessionClient {
       ...(joinerId === undefined ? {} : { joinerId }),
     };
     socket.send(JSON.stringify(decision));
+  }
+
+  /**
+   * Hosts remove a joined participant from the session. The authority closes
+   * the target with 1008 'kicked-by-host' and broadcasts a
+   * `participant-kicked` diagnostic; non-hosts are rejected with 'not-host'.
+   */
+  sendKick(targetId: string): void {
+    const socket = this.socket;
+    if (!socket || socket.readyState !== WebSocket.OPEN) throw new Error('Session client is not connected');
+    const message: KickMessage = {
+      type: 'kick',
+      participantId: this.options.participantId,
+      targetId,
+    };
+    socket.send(JSON.stringify(message));
   }
 
   /**

@@ -25,6 +25,7 @@
 | `join` | `participantId`；可选 `roleHint`（`'host'\|'client'`）；可选 `resourceIdentity` | 加入会话。身份可选：不知道资源的加入者在 `join-accepted` 中采纳被推资源；**提供且与会话已绑定资源不等** → 拒绝 `resource-mismatch`；未绑定会话则采纳首个 host join 的身份。`roleHint`/`resourceIdentity` 缺省保持与旧客户端线上兼容 |
 | `resource-bind` | `participantId`；`resourceIdentity` | **任一已加入参与者**（host 或 client 均可）可绑定/切换会话媒体。幂等：绑定与会话**完全相同**的身份是 no-op（不 bump revision、不重置播放头，防两端并发绑定同资源的竞态）。不同身份 → 见 §3.3 |
 | `join-decision` | `participantId`（决策者，即 host）；`accepted: boolean`；可选 `joinerId` | host 裁决待审批加入请求：`joinerId` 指定目标加入者；多个请求待审时**必须**指定（否则 `ambiguous-join-decision`），单一待审时可省略（兼容旧客户端）；目标不存在 → `no-pending-join`；非 host → `not-host` |
+| `kick` | `participantId`（决策者，即 host）；`targetId` | host 移出一名**已加入**参与者：目标 socket 以 `1008 kicked-by-host` 关闭，全体存活者收到 `participant-kicked` 诊断；非 host → `not-host`，自踢 → `invalid-target`，目标不存在 → `unknown-target`。待审批加入者用 `join-decision` 拒绝，不是 kick 目标 |
 | `intent` | `commandId`；`sessionId`；`participantId`；`clientObservedRevision`；`kind`；可选 `payload`；`createdAtMs` | 播放意图，见 §3。`commandId` 重复 → 权威回当前状态且**绝不重放**（幂等）；`sessionId` 不符 → `session-mismatch` |
 | `snapshot-request` | `participantId`；`observedRevision` | 请求当前权威快照 → `snapshot` |
 | `actual-state` | `sessionId`；`participantId`；`observedRevision`；`resourceIdentity`；`mediaPhase`；`positionSeconds`；`positionObservedAtMs`；`playbackRate`；`durationSeconds`；`adapterId`；`applyResult`；可选 `error` | 页面真实观测报告，见 §5。守卫要求所有字段齐全且结构合法 |
@@ -41,7 +42,7 @@
 | `state` | 权威 `PlaybackState` 广播（每次成功意图/bind/终态提升都广播） |
 | `snapshot` | `snapshot-request` 的应答，携带当前 `PlaybackState` |
 | `session-status` | 可观察就绪度，见 §6；仅变化时广播（防稳态报告刷屏） |
-| `diagnostic` | `code: 'desync'\|'participant-left'\|'actual-state-mismatch'`；含期望/实际对照与资源对比（未绑定会话无 `resource` 字段） |
+| `diagnostic` | `code: 'desync'\|'participant-left'\|'actual-state-mismatch'\|'participant-kicked'`；含期望/实际对照与资源对比（未绑定会话无 `resource` 字段）；可选 `issues`（触发诊断的 issue kind 数组，供客户端分级展示而不解析 `detail`） |
 | `error` | `{ code, message }`，见 §8 |
 
 ## 3. 权威状态机
@@ -154,6 +155,7 @@ type SessionStatusMessage = {
 ## 7. 资源身份（协议视角）
 
 - `ResourceIdentity = { adapterId, canonicalUrl, resourceId? }`；`canonicalUrl = origin + 去尾斜杠 pathname`（去 query/hash）。
+  Bilibili 例外：多 P 的 `p` 查询参数保留（`p>1` → `?p=<n>`；`p=1`/缺省/非法值保持裸形式）——不同分 P 是不同会话资源，切换分 P 走 §3.3 的资源重绑定。
 - 结构守卫 `isValidResourceIdentity` 只要求：非空 `adapterId`、http(s) `canonicalUrl`、可选非空 `resourceId`。
   **刻意与站点无关**——任何站点的适配器产出的身份都被共享核心接受。站点策略的落地方式两个内置同步器不同：
   Bilibili 有共享站点守卫（`isBilibiliResourceIdentity`，`src/shared/protocol.ts`）在入口强制执行；
@@ -171,9 +173,10 @@ type SessionStatusMessage = {
 | 服务端 `error` | `invalid-json` / `invalid-message` / `unknown-message` | 线上消息不合法/未知类型 |
 | 服务端 `error` | `invalid-intent` | 意图结构非法 |
 | 服务端 `error` | `not-joined` / `session-mismatch` | 未加入 / 会话不符 |
-| 服务端 `error` | `not-host` / `no-pending-join` | 非 host 裁决 / 无待定加入者 |
+| 服务端 `error` | `not-host` / `no-pending-join` / `ambiguous-join-decision` | 非 host 操作 / 无待定加入者 / 多个待审但未指定 `joinerId` |
+| 服务端 `error` | `unknown-target` / `invalid-target` | kick 目标不存在 / host 自踢 |
 | 状态机 `StateTransitionError` | `invalid-seek` / `invalid-rate` / `resource-unbound` / `session-mismatch` / `invalid-state` / `invalid-clock` / `invalid-intent` / `invalid-duration` / `invalid-session` / `invalid-resource-identity` | 见 §3.2 |
-| 诊断 `diagnostic` | `desync` / `participant-left` / `actual-state-mismatch` | 一致性失配 / 参与者离开 / 资源身份失配 |
+| 诊断 `diagnostic` | `desync` / `participant-left` / `actual-state-mismatch` / `participant-kicked` | 一致性失配 / 参与者离开 / 资源身份失配 / 参与者被房主移出 |
 | 适配器 `AdapterSiteError` | `invalid-url` / `not-bilibili` / `browser-required` / `no-media` | 见 authoring.md §2；该 code 联合站点无关，内置 Bilibili/YouTube 共用（消息点名实际站点） |
 | 注册表 `AdapterRegistryError` | `duplicate-adapter` / `duplicate-domain` / `invalid-registration` / `invalid-rule` | 见 authoring.md §1 |
 

@@ -71,6 +71,9 @@ const PAGE = {
   pdfListenersAttached: false,
   lastHeartbeatAt: 0,
   syncSurfaceAvailable: false,
+  titleSelectors: [],
+  titleSuffixes: [],
+  lastTitleSent: null,
 };
 
 // --- identity -------------------------------------------------------------------
@@ -192,6 +195,24 @@ function readSnapshot(target) {
     playbackRate: video ? video.playbackRate : 1,
     durationSeconds: video && Number.isFinite(video.duration) ? video.duration : null,
   };
+}
+
+/**
+ * The page's video title: the syncer's title element first (identity.js
+ * registry), the document title with the site suffix stripped as fallback.
+ * Display-only — it never participates in identity equality.
+ */
+function readPageTitle() {
+  for (const selector of PAGE.titleSelectors) {
+    const element = document.querySelector(selector);
+    const text = element?.textContent?.trim();
+    if (text) return text;
+  }
+  let title = document.title.trim();
+  for (const suffix of PAGE.titleSuffixes) {
+    if (title.endsWith(suffix)) title = title.slice(0, title.length - suffix.length).trim();
+  }
+  return title.length > 0 ? title : null;
 }
 
 function ensurePdfListeners() {
@@ -500,6 +521,8 @@ function refresh() {
     PAGE.identity = identity;
     const descriptor = identity ? AnyTogetherIdentity.resolveAdapter(href) : null;
     PAGE.syncDefinitions = descriptor?.syncItemDefinitions ?? [];
+    PAGE.titleSelectors = descriptor?.titleSelectors ?? [];
+    PAGE.titleSuffixes = descriptor?.titleSuffixes ?? [];
     PAGE.registered = false;
     PAGE.initialApplied = false;
     PAGE.target = null;
@@ -510,6 +533,7 @@ function refresh() {
     PAGE.syncSurfaceAvailable = false;
     PAGE.lastHeartbeatAt = 0;
     PAGE.lastAppliedRevision = -1;
+    PAGE.lastTitleSent = null;
   }
 
   if (identity) {
@@ -541,6 +565,15 @@ function refresh() {
     sendContentReady(identity, isPdfPage() ? PAGE.syncSurfaceAvailable : PAGE.target !== null);
   }
 
+  // The page title can finish loading (or change on SPA swaps) after the
+  // initial registration: re-send content-ready when it changes so the popup's
+  // resource card shows the real title instead of the resource id. This only
+  // fires on actual title changes, so the extra apply-pipeline pass is rare.
+  if (identity && PAGE.registered) {
+    const title = readPageTitle();
+    if (title !== PAGE.lastTitleSent) sendContentReady(identity, PAGE.target !== null);
+  }
+
   // Heartbeat for non-playing phases: timeupdate only fires while playing, so
   // a paused/ended page would otherwise go silent and the authority could
   // never observe a phase or position divergence on it. Playing-phase
@@ -556,12 +589,15 @@ function refresh() {
 
 function sendContentReady(identity, hasSurface) {
   const syncItems = isPdfPage() ? readPdfSyncItems() : null;
+  const title = readPageTitle();
+  PAGE.lastTitleSent = title;
   sendToBackground({
     type: 'content-ready',
     identity,
     hasVideo: hasSurface,
     syncItemDefinitions: PAGE.syncDefinitions,
     ...(syncItems === null ? {} : { syncItems }),
+    ...(title === null ? {} : { title }),
   });
 }
 

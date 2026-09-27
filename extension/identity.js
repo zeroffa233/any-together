@@ -94,6 +94,8 @@
       syncItemDefinitions: Array.isArray(registration.syncItemDefinitions)
         ? registration.syncItemDefinitions.map((definition) => ({ ...definition }))
         : [],
+      titleSelectors: Array.isArray(registration.titleSelectors) ? registration.titleSelectors.slice() : [],
+      titleSuffixes: Array.isArray(registration.titleSuffixes) ? registration.titleSuffixes.slice() : [],
       capabilities: Array.isArray(registration.capabilities) ? registration.capabilities.slice() : [],
       deriveIdentity: typeof registration.deriveIdentity === 'function' ? registration.deriveIdentity : undefined,
     };
@@ -269,9 +271,23 @@
     // anchored at the scheme so embedded "/video" segments never match.
     urlRule: { source: '^https?://[^/]*/video(/|$|[?#])', flags: '' },
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    titleSelectors: ['h1.video-title', '.video-info-title h1'],
+    titleSuffixes: ['_哔哩哔哩_bilibili'],
     deriveIdentity(url) {
       const match = url.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/);
-      return match ? { resourceId: match[1] } : undefined;
+      // The `p` query parameter selects the part (分P) of a multi-part upload:
+      // parts > 1 become their own canonical resource (?p=<n>), so switching
+      // parts re-binds the session like any other resource switch. Part 1,
+      // absent and invalid values keep the bare canonical form. Tracking
+      // parameters are dropped either way — same policy as the Node
+      // createBilibiliResourceIdentity.
+      const partRaw = url.searchParams.get('p');
+      const part = partRaw !== null && /^\d+$/.test(partRaw.trim()) ? Number(partRaw) : null;
+      if (!match) return undefined;
+      if (part !== null && Number.isSafeInteger(part) && part > 1) {
+        return { canonicalUrl: `https://www.bilibili.com/video/${match[1]}?p=${part}`, resourceId: match[1] };
+      }
+      return { resourceId: match[1] };
     },
   });
 
@@ -291,6 +307,8 @@
     // /watch followed by a query string carrying a non-empty v= parameter.
     urlRule: { source: '^https?://(?:[^/]+\\.)?youtube\\.com/watch\\?(?:[^#]*&)?v=[^&#]+', flags: '' },
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    titleSelectors: ['h1.ytd-watch-metadata yt-formatted-string', 'h1.title yt-formatted-string'],
+    titleSuffixes: [' - YouTube'],
     deriveIdentity(url) {
       const videoId = url.searchParams.get('v');
       if (!videoId) return undefined;
@@ -317,6 +335,7 @@
       flags: '',
     },
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    titleSelectors: ['h1.title', 'h1.video-title'],
     deriveIdentity(url) {
       const match = url.href.match(/^https?:\/\/(?:[^/]+\.)?missav\.live\/(?:dm\d+\/)?([a-z]{2}(?:-[a-z]{2})?)\/([a-z0-9]+-[a-z0-9]+)\/?(?=[?#]|$)/);
       if (!match) return undefined;
@@ -340,6 +359,8 @@
     // /view_video.php with a non-empty viewkey= parameter in any query position.
     urlRule: { source: '^https?://(?:[^/]+\\.)?pornhub\\.com/view_video\\.php\\?(?:[^#]*&)?viewkey=[^&#]+', flags: '' },
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    titleSelectors: ['h1.title'],
+    titleSuffixes: [' - Pornhub.com'],
     deriveIdentity(url) {
       const viewkey = url.searchParams.get('viewkey');
       if (viewkey === null) return undefined;
@@ -368,6 +389,8 @@
     // Current-shape video pages only: /video.<encoded-id>/<slug>.
     urlRule: { source: '^https?://(?:[^/]+\\.)?xvideos\\.com/video\\.([A-Za-z0-9]+)/[^/?#]+$', flags: '' },
     capabilities: ['play', 'pause', 'seek', 'set-rate', 'replay', 'native-events'],
+    titleSelectors: ['h1.page-title', '.page-title'],
+    titleSuffixes: [' - XVIDEOS.COM'],
     deriveIdentity(url) {
       const match = url.href.match(/^https?:\/\/(?:[^/]+\.)?xvideos\.com\/video\.([A-Za-z0-9]+)\/[^\/?#]+$/);
       if (!match) return undefined;

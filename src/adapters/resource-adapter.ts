@@ -87,6 +87,9 @@ export class AdapterSiteError extends Error {
  *   deterministic — callers must never pick the "first" candidate themselves.
  * - `readState()` returns the real observed state of the selected target; throws
  *   `AdapterSiteError` when no target is available.
+ * - `readTitle()` returns the page's video title (element text first, document
+ *   title with site suffixes stripped as fallback) or null when nothing usable
+ *   exists. Purely informational: it never participates in identity equality.
  * - `applyState(target)` performs play/pause/seek/rate and always resolves to an
  *   `AdapterApplyResult` whose `state` is read after execution.
  * - `subscribe(listener)` binds native events for the current target and returns an
@@ -97,6 +100,38 @@ export interface ResourceAdapter {
   identifyResource(): ResourceIdentity;
   selectTarget(): void;
   readState(): LocalPlaybackState;
+  readTitle(): string | null;
   applyState(target: AdapterTargetState): Promise<AdapterApplyResult>;
   subscribe(listener: (event: AdapterEvent) => void): () => void;
+}
+
+/**
+ * Shared title extraction for page documents. Tries each CSS selector in order
+ * (first non-empty textContent wins), then falls back to `document.title` with
+ * each site suffix stripped. The document is structural: adapters may run in
+ * Node tests with fakes that provide only what they need, so every access is
+ * guarded and absence yields null instead of throwing.
+ */
+export function readPageTitle(
+  document: unknown,
+  selectors: readonly string[],
+  suffixes: readonly string[] = [],
+): string | null {
+  if (typeof document !== 'object' || document === null) return null;
+  for (const selector of selectors) {
+    if (!('querySelector' in document) || typeof document.querySelector !== 'function') break;
+    const element: unknown = document.querySelector(selector);
+    if (typeof element !== 'object' || element === null) continue;
+    if (!('textContent' in element)) continue;
+    const text = element.textContent;
+    if (typeof text === 'string' && text.trim().length > 0) return text.trim();
+  }
+  if ('title' in document && typeof document.title === 'string') {
+    let title = document.title.trim();
+    for (const suffix of suffixes) {
+      if (title.endsWith(suffix)) title = title.slice(0, title.length - suffix.length).trim();
+    }
+    if (title.length > 0) return title;
+  }
+  return null;
 }

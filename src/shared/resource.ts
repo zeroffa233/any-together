@@ -23,7 +23,14 @@ export class ResourceIdentityError extends Error {
  *   Bilibili pages throw a stable `ResourceIdentityError` ('invalid-url' and
  *   'not-bilibili' respectively).
  * - The canonical URL is `origin + pathname` with the trailing slash trimmed and
- *   query/hash dropped, so the same video always maps to one identity.
+ *   query/hash dropped, so the same video always maps to one identity — EXCEPT
+ *   the `p` query parameter: it selects the part (分P) of a multi-part upload
+ *   and therefore WHICH video the player loads. Parts > 1 are kept as `?p=<n>`
+ *   on the canonical URL, so different parts are different session resources
+ *   (switching parts re-binds the session like any other resource switch).
+ *   Part 1 and invalid/absent values keep the bare canonical form, so plain
+ *   video URLs stay compatible. Tracking parameters (vd_source, spm_id_from,
+ *   t, ...) are always dropped.
  * - The BV id is preserved as `resourceId` when the path carries a `/video/BV…`
  *   segment; it stays undefined for `/video` pages without a BV segment.
  */
@@ -44,19 +51,33 @@ export function createBilibiliResourceIdentity(location: string): ResourceIdenti
     );
   }
   const url = new URL(location);
-  const canonicalUrl = `${url.origin}${url.pathname.replace(/\/$/, '')}`;
-  if (!BILIBILI_VIDEO_PATH_PATTERN.test(canonicalUrl)) {
+  const base = `${url.origin}${url.pathname.replace(/\/$/, '')}`;
+  if (!BILIBILI_VIDEO_PATH_PATTERN.test(base)) {
     throw new ResourceIdentityError(
       'not-bilibili',
       `Resource URL ${location} is not a Bilibili video page`,
     );
   }
+  const part = normalizeBilibiliPart(url.searchParams.get('p'));
+  const canonicalUrl = part === null ? base : `${base}?p=${part}`;
   const resourceId = url.pathname.match(/\/video\/(BV[0-9A-Za-z]+)/)?.[1];
   return {
     adapterId: 'bilibili',
     canonicalUrl,
     ...(resourceId === undefined ? {} : { resourceId }),
   };
+}
+
+/**
+ * The part number from a `p` query parameter, or null when the URL does not
+ * select a part above 1: absent, non-numeric, zero or unsafe values all mean
+ * "part 1" and keep the bare canonical form.
+ */
+function normalizeBilibiliPart(raw: string | null): number | null {
+  if (raw === null || !/^\d+$/.test(raw.trim())) return null;
+  const part = Number(raw);
+  if (!Number.isSafeInteger(part) || part <= 1) return null;
+  return part;
 }
 
 /** Re-exported so adapter/CLI callers share one host-matching definition. */

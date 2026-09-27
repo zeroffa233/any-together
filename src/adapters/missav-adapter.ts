@@ -1,4 +1,4 @@
-import { AdapterSiteError, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
+import { AdapterSiteError, readPageTitle, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
 import type { MediaPhase, ResourceIdentity } from '../shared/protocol.js';
 import type { AdapterPage, SyncerRegistration } from './adapter-registry.js';
 
@@ -29,6 +29,9 @@ export type MissavMediaCollection = ArrayLike<MissavMediaElement> & Iterable<Mis
 
 export interface MissavDocument {
   querySelectorAll(selectors: string): MissavMediaCollection;
+  /** Optional structural surfaces for `readTitle`; browsers provide both. */
+  querySelector?(selectors: string): unknown;
+  title?: unknown;
 }
 
 export interface MissavPage {
@@ -140,6 +143,14 @@ export class MissavAdapter implements ResourceAdapter {
 
   readState(): LocalPlaybackState {
     return this.readStateOf(this.requireTarget());
+  }
+
+  /**
+   * The watch page's video title: the heading element first, the document
+   * title as fallback. Never participates in identity equality — display only.
+   */
+  readTitle(): string | null {
+    return readPageTitle(this.page.document, ['h1.title', 'h1.video-title']);
   }
 
   async applyState(targetState: AdapterTargetState): Promise<AdapterApplyResult> {

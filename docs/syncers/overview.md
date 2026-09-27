@@ -111,7 +111,7 @@ sequenceDiagram
 |---|---|
 | `adapterId` | 同步器稳定标识；同时是资源身份的名字空间（`ResourceIdentity.adapterId`）。当前内置值：`'bilibili'`、`'youtube'`、`'missav'`、`'pornhub'`、`'xvideos'`、`'local-video'`（动态 LAN IPv4/localhost）、`'arxiv-pdf'`（共享标量项，见 protocol.md §10）。 |
 | `ResourceIdentity` | `{ adapterId, canonicalUrl, resourceId? }`；canonicalUrl = origin + 去尾斜杠 pathname，去 query/hash。 |
-| `canonicalUrl` | 同一资源映射到唯一身份的比较键；同一资源的所有 URL 形式归一为同一个值。 |
+| `canonicalUrl` | 同一资源映射到唯一身份的比较键；同一资源的所有 URL 形式归一为同一个值。Bilibili 例外：多 P 上传的 `p` 查询参数选择分 P，属于资源本身——`p>1` 保留为 `?p=<n>`（不同分 P 是不同会话资源，切换分 P 走资源重绑定），`p=1`/缺省/非法值保持裸 canonical 形式；其余查询参数始终丢弃。 |
 | `resourceId` | 可选站点内稳定资源键（如 Bilibili 的 BV 号、YouTube 的视频 id）；没有则不出现该字段。 |
 | `MediaPhase` | `'loading' \| 'ready' \| 'playing' \| 'paused' \| 'seeking' \| 'buffering' \| 'ended' \| 'error'`。 |
 | `PlaybackState` | 权威会话状态（sessionId、identity(可空)、revision、sequence、phase、位置锚点、速率、时长、lastCommandId、updatedAtMs、errorCode?）。 |

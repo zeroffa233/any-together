@@ -1,4 +1,4 @@
-import { AdapterSiteError, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
+import { AdapterSiteError, readPageTitle, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
 import { BILIBILI_VIDEO_PATH_PATTERN, type MediaPhase, type ResourceIdentity } from '../shared/protocol.js';
 import { createBilibiliResourceIdentity } from '../shared/resource.js';
 import type { AdapterPage, SyncerRegistration } from './adapter-registry.js';
@@ -28,6 +28,9 @@ export type BilibiliMediaCollection = ArrayLike<BilibiliMediaElement> & Iterable
 
 export interface BilibiliDocument {
   querySelectorAll(selectors: string): BilibiliMediaCollection;
+  /** Optional structural surfaces for `readTitle`; browsers provide both. */
+  querySelector?(selectors: string): unknown;
+  title?: unknown;
 }
 
 export interface BilibiliPage {
@@ -109,6 +112,19 @@ export class BilibiliAdapter implements ResourceAdapter {
 
   readState(): LocalPlaybackState {
     return this.readStateOf(this.requireTarget());
+  }
+
+  /**
+   * The watch page's video title: the dedicated title element first, the
+   * document title with the Bilibili suffix stripped as fallback. Never
+   * participates in identity equality — display only.
+   */
+  readTitle(): string | null {
+    return readPageTitle(
+      this.page.document,
+      ['h1.video-title', '.video-info-title h1'],
+      ['_哔哩哔哩_bilibili'],
+    );
   }
 
   async applyState(targetState: AdapterTargetState): Promise<AdapterApplyResult> {

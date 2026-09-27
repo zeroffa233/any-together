@@ -1,4 +1,4 @@
-import { AdapterSiteError, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
+import { AdapterSiteError, readPageTitle, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
 import type { MediaPhase, ResourceIdentity } from '../shared/protocol.js';
 import type { AdapterPage, SyncerRegistration } from './adapter-registry.js';
 
@@ -30,6 +30,9 @@ export type XvideosMediaCollection = ArrayLike<XvideosMediaElement> & Iterable<X
 
 export interface XvideosDocument {
   querySelectorAll(selectors: string): XvideosMediaCollection;
+  /** Optional structural surfaces for `readTitle`; browsers provide both. */
+  querySelector?(selectors: string): unknown;
+  title?: unknown;
 }
 
 export interface XvideosPage {
@@ -154,6 +157,15 @@ export class XvideosAdapter implements ResourceAdapter {
 
   readState(): LocalPlaybackState {
     return this.readStateOf(this.requireTarget());
+  }
+
+  /**
+   * The watch page's video title: the page-title heading first, the document
+   * title with the XVIDEOS suffix stripped as fallback. Never participates in
+   * identity equality — display only.
+   */
+  readTitle(): string | null {
+    return readPageTitle(this.page.document, ['h1.page-title', '.page-title'], [' - XVIDEOS.COM']);
   }
 
   async applyState(targetState: AdapterTargetState): Promise<AdapterApplyResult> {

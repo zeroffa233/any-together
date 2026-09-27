@@ -10,6 +10,7 @@
 
 - Popup 一次只承载一个会话连接；角色由权威按加入顺序分配（先加入者为 host），不能在活动连接中切换会话或角色，切换必须先断开。
 - 实际角色永远以 `join-accepted.role` 为准。界面显示实际分配结果：host 负责审批后续加入请求，client 直接进入同步；不得把本地假设当作已获角色。
+- host 可以把其他已加入参与者移出会话：参与者列表对 host 显示“移出”操作；被移出端以 `1008 kicked-by-host` 关闭并显示“你已被房主移出会话”，存活端收到 `participant-kicked` 诊断。被移出者可重新发起加入请求。
 - 角色冲突按稳定 `code/reason` 映射为可操作文案，不能解析服务端英文 `message`：会话已有 host 时以 host 身份加入 → “此会话已有主机，请切换为从机”；空会话以 client 身份加入 → “此会话需要先由主机创建，请在创建者设备选择主机”。
 - Connect/加入、接受、拒绝均为不可重复提交操作：提交瞬间锁定按钮；响应或明确失败后才恢复。不能通过快速双击建立两个 socket 或发出两个审批。
 - 不提供播放、暂停、跳转、倍速、重播或“控制播放器”按钮；不提供手动视频 URL 输入。播放操作只能发生在页面原生播放器，popup 只读显示其权威投影。
@@ -192,13 +193,13 @@ error --重试--> connecting
 
 ### 6.1 参与者列表
 
-- 标题“参与者（n/2）”；`n` 取 `session-status.participants.length`，不根据颜色或本地按钮推断。
+- 标题“参与者（n）”；`n` 取 `session-status.participants.length`，不根据颜色或本地按钮推断。
 - 每行：28px 状态图标、`participantId`（超长省略但可通过 title/可访问名称读取）、实际角色“主机/从机”、本机标记、当前 revision 的回报状态。
 - `reported=false` 文案“等待页面回报”；`reported=true && consistent=true` 文案“已回报，一致”；`consistent=false` 文案“需要检查”。三者必须有文字/图标，不得只上色。
 - 0/1 人时显示占位行“等待另一位参与者加入”；不将 pending joiner 伪装成已加入参与者。
 - 参与者离开时从列表移除，诊断抽屉保留最新 `participant-left`；状态回到 waiting（等待第二位参与者），而不是显示 ready。
 
-### 6.2 加入审批
+### 6.2 加入审批与房主管理
 
 仅 host 且收到 `join-request` 时显示在状态带下方，包含请求者 participantId；如果请求携带 resourceIdentity，显示站点和 canonical URL，否则显示“未提供视频”。
 

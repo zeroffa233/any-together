@@ -1,4 +1,4 @@
-import { AdapterSiteError, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
+import { AdapterSiteError, readPageTitle, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
 import type { MediaPhase, ResourceIdentity } from '../shared/protocol.js';
 import type { AdapterPage, SyncerRegistration } from './adapter-registry.js';
 
@@ -29,6 +29,9 @@ export type YoutubeMediaCollection = ArrayLike<YoutubeMediaElement> & Iterable<Y
 
 export interface YoutubeDocument {
   querySelectorAll(selectors: string): YoutubeMediaCollection;
+  /** Optional structural surfaces for `readTitle`; browsers provide both. */
+  querySelector?(selectors: string): unknown;
+  title?: unknown;
 }
 
 export interface YoutubePage {
@@ -138,6 +141,19 @@ export class YoutubeAdapter implements ResourceAdapter {
 
   readState(): LocalPlaybackState {
     return this.readStateOf(this.requireTarget());
+  }
+
+  /**
+   * The watch page's video title: the watch-metadata heading first, the
+   * document title with the YouTube suffix stripped as fallback. Never
+   * participates in identity equality — display only.
+   */
+  readTitle(): string | null {
+    return readPageTitle(
+      this.page.document,
+      ['h1.ytd-watch-metadata yt-formatted-string', 'h1.title yt-formatted-string'],
+      [' - YouTube'],
+    );
   }
 
   async applyState(targetState: AdapterTargetState): Promise<AdapterApplyResult> {

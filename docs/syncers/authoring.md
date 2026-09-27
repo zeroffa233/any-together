@@ -81,10 +81,21 @@ interface ResourceAdapter {
   identifyResource(): ResourceIdentity;
   selectTarget(): void;
   readState(): LocalPlaybackState;
+  readTitle(): string | null;
   applyState(target: AdapterTargetState): Promise<AdapterApplyResult>;
   subscribe(listener: (event: AdapterEvent) => void): () => void;
 }
 ```
+
+### 2.0 `readTitle()`（展示用标题）
+
+| 方法 | 输入 | 返回 | 失败 |
+|---|---|---|---|
+| `readTitle()` | 无（用页面 document） | 站点标题元素文本（优先），`document.title` 去掉站点后缀（后备），两者皆无 → `null` | 永不抛错；document 缺失/无匹配一律 `null` |
+
+纯展示信息：标题**绝不参与身份相等判定**，也不进入权威状态。Node 侧各适配器与浏览器侧
+`identity.js` 注册项的 `titleSelectors`/`titleSuffixes` 必须保持同构；共享实现是
+`readPageTitle()`（`src/adapters/resource-adapter.ts`）。
 
 | 方法 | 输入 | 输出 | 失败语义（抛 `AdapterSiteError`） |
 |---|---|---|---|
@@ -283,7 +294,8 @@ content.js 已经为你处理（`[当前实现]`，新 HTMLMediaElement 站点�
    - `readState`：全部相位映射分支（error/ended/seeking/paused/buffering/loading/playing）与时长 null 规则；
    - `applyState`：pause/play/seek（阈值内不动、阈值外 seek 且回读安定状态）、速率、`play()` 拒绝 → `'rejected'`、
      非法速率 → `'rejected'`、无目标 → `'unsupported'`（占位状态仍是合法身份）；
-   - `subscribe`：10 个事件全部绑定、回调逐一收到、unsubscribe 精确清除。
+   - `subscribe`：10 个事件全部绑定、回调逐一收到、unsubscribe 精确清除；
+   - `readTitle`：站点标题元素命中（trim）、document.title 后备去后缀、无 document → `null`。
 4. **注册表测试**：resolve 矩阵（apex/子域/非资源页/未知/非 http(s)/不可解析 → undefined）、
    长域名优先、`duplicate-domain`/`duplicate-adapter`/`invalid-rule`（空 source、g/y 标志、编译失败）、
    失败注册不留部分状态（`size` 不变）。

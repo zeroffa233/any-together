@@ -61,6 +61,7 @@ const SESSION = {
   lastRoutedFingerprint: null, // resource fingerprint whose URL we already auto-navigated to once
   identity: null, // session ResourceIdentity; adopted from join-accepted or a
   // newer authoritative state after a participant resource-bind
+  resourceTitle: null, // display-only page title for the current resource, from content-ready
   // Client-only one-time auto recovery: once the authority reports the session
   // ready, the client tab is refreshed in place exactly once per resource so
   // the page re-injects the authoritative state and reports its actual state.
@@ -412,7 +413,7 @@ async function connect(options) {
     setStatus('error');
   });
 
-  ws.addEventListener('close', () => {
+  ws.addEventListener('close', (event) => {
     if (SESSION.ws !== ws) return;
     SESSION.ws = null;
     SESSION.clientTabId = null;
@@ -429,11 +430,15 @@ async function connect(options) {
     SESSION.latestStatus = null;
     SESSION.lastDiagnostic = null;
     SESSION.pendingJoins.clear();
+    SESSION.resourceTitle = null;
     SESSION.notice = null;
     SESSION.applyQueue = Promise.resolve();
     resetClockSync();
     stopKeepalive();
-    if (SESSION.status !== 'error') {
+    if (event && event.reason === 'kicked-by-host') {
+      SESSION.lastError = '你已被房主移出会话';
+      setStatus('error');
+    } else if (SESSION.status !== 'error') {
       SESSION.lastError = null;
       setStatus('disconnected');
     }
@@ -459,6 +464,7 @@ function disconnect() {
   SESSION.latestStatus = null;
   SESSION.lastDiagnostic = null;
   SESSION.pendingJoins.clear();
+  SESSION.resourceTitle = null;
   SESSION.notice = null;
   SESSION.applyQueue = Promise.resolve();
   SESSION.lastError = null;
@@ -590,6 +596,9 @@ function acceptAuthoritativeState(serverState, isSnapshot = false) {
     // A participant switched the session resource: adopt the new identity so
     // routing and reporting follow the authoritative resource.
     SESSION.identity = state.resourceIdentity;
+    // The new resource's title is unknown until its page re-registers.
+    SESSION.resourceTitle = null;
+    notifyPopup({ type: 'resource-title', title: null });
     if (SESSION.bindInFlight && IDENTITY.identityEqual(SESSION.bindInFlight, SESSION.identity)) {
       SESSION.bindInFlight = null; // the pending bind landed
     }
@@ -1221,6 +1230,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ ok: true });
       return undefined;
     }
+    case 'kick': {
+      // Host-only: remove a joined participant. Server-side validation
+      // rejects non-hosts, unknown targets and self-kicks with error codes.
+      if (SESSION.status !== 'connected' || !SESSION.ws) {
+        sendResponse({ ok: false, error: '未连接会话' });
+        return undefined;
+      }
+      if (SESSION.role !== 'host' || typeof message.targetId !== 'string' || message.targetId.length === 0) {
+        sendResponse({ ok: false, error: '只有房主可以移出参与者' });
+        return undefined;
+      }
+      SESSION.ws.send(JSON.stringify({
+        type: 'kick',
+        participantId: SESSION.participantId,
+        targetId: message.targetId,
+      }));
+      sendResponse({ ok: true });
+      return undefined;
+    }
     case 'get-status':
       sendResponse({
         status: SESSION.status,
@@ -1244,6 +1272,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         lastDiagnostic: SESSION.lastDiagnostic,
         pendingJoin: SESSION.pendingJoins.values().next().value ?? null,
         pendingJoinCount: SESSION.pendingJoins.size,
+        resourceTitle: SESSION.resourceTitle,
         localPermission: SESSION.pendingLocalPermission,
       });
       return undefined;
@@ -1300,6 +1329,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       // no longer matches the apply target.
       if (SESSION.role === 'host' && message.syncItemDefinitions && message.syncItems) {
         sendSyncItemBind(message.syncItemDefinitions, message.syncItems);
+      }
+      // Display-only page title for the resource card: the content script
+      // re-sends content-ready whenever it changes, so this stays fresh.
+      const title = typeof message.title === 'string' && message.title.trim().length > 0
+        ? message.title.trim()
+        : null;
+      if (SESSION.resourceTitle !== title) {
+        SESSION.resourceTitle = title;
+        notifyPopup({ type: 'resource-title', title });
       }
       registerApplyTarget(tabId, message.hasVideo);
       return undefined;

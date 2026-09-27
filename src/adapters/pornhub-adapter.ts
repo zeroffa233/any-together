@@ -1,4 +1,4 @@
-import { AdapterSiteError, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
+import { AdapterSiteError, readPageTitle, type AdapterApplyResult, type AdapterEvent, type AdapterTargetState, type LocalPlaybackState, type ResourceAdapter } from './resource-adapter.js';
 import type { MediaPhase, ResourceIdentity } from '../shared/protocol.js';
 import type { AdapterPage, SyncerRegistration } from './adapter-registry.js';
 
@@ -31,6 +31,9 @@ export type PornhubMediaCollection = ArrayLike<PornhubMediaElement> & Iterable<P
 
 export interface PornhubDocument {
   querySelectorAll(selectors: string): PornhubMediaCollection;
+  /** Optional structural surfaces for `readTitle`; browsers provide both. */
+  querySelector?(selectors: string): unknown;
+  title?: unknown;
 }
 
 export interface PornhubPage {
@@ -144,6 +147,15 @@ export class PornhubAdapter implements ResourceAdapter {
 
   readState(): LocalPlaybackState {
     return this.readStateOf(this.requireTarget());
+  }
+
+  /**
+   * The watch page's video title: the heading element first, the document
+   * title with the Pornhub suffix stripped as fallback. Never participates in
+   * identity equality — display only.
+   */
+  readTitle(): string | null {
+    return readPageTitle(this.page.document, ['h1.title'], [' - Pornhub.com']);
   }
 
   async applyState(targetState: AdapterTargetState): Promise<AdapterApplyResult> {

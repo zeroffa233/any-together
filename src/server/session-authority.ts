@@ -8,6 +8,7 @@ import {
   isClientJoin,
   isClockSyncRequest,
   isJoinDecision,
+  isKickMessage,
   isPlaybackIntent,
   isResourceBindMessage,
   isResourceIdentityEqual,
@@ -19,6 +20,7 @@ import {
   type ClientMessage,
   type DiagnosticMessage,
   type JoinDecision,
+  type KickMessage,
   type PlaybackIntent,
   type PlaybackState,
   type ResourceBindMessage,
@@ -371,6 +373,13 @@ export class SessionAuthority {
           }
           this.handleJoinDecision(socket, message);
           return;
+        case 'kick':
+          if (!isKickMessage(message)) {
+            this.send(socket, { type: 'error', code: 'invalid-message', message: 'Malformed kick message' });
+            return;
+          }
+          this.handleKick(socket, message);
+          return;
         case 'intent':
           if (!isPlaybackIntent(message)) {
             this.send(socket, { type: 'error', code: 'invalid-intent', message: 'Malformed playback intent' });
@@ -573,6 +582,51 @@ export class SessionAuthority {
       if (participant.role === 'host') return participant;
     }
     return undefined;
+  }
+
+  /**
+   * Host-only removal of a JOINED participant. The target is deleted from the
+   * session, told why via its close frame (1008 'kicked-by-host'), and every
+   * survivor learns it through a `participant-kicked` diagnostic. Pending
+   * (unapproved) joiners are not kick targets — the host declines them with
+   * `join-decision` instead. The target socket's own close event is a no-op
+   * because the participant entry is already gone.
+   */
+  private handleKick(socket: WebSocket, message: KickMessage): void {
+    const participant = this.participants.get(socket);
+    if (!participant || participant.id !== message.participantId) {
+      this.send(socket, { type: 'error', code: 'not-joined', message: 'Participant is not joined to this session' });
+      return;
+    }
+    if (participant.role !== 'host') {
+      this.send(socket, { type: 'error', code: 'not-host', message: 'Only the host may kick participants' });
+      return;
+    }
+    if (message.targetId === participant.id) {
+      this.send(socket, { type: 'error', code: 'invalid-target', message: 'The host cannot kick itself' });
+      return;
+    }
+    let target: { socket: WebSocket; participant: Participant } | undefined;
+    for (const [targetSocket, candidate] of this.participants) {
+      if (candidate.id === message.targetId) {
+        target = { socket: targetSocket, participant: candidate };
+        break;
+      }
+    }
+    if (target === undefined) {
+      this.send(socket, { type: 'error', code: 'unknown-target', message: 'No joined participant with that id' });
+      return;
+    }
+    this.participants.delete(target.socket);
+    this.reports.delete(target.socket);
+    this.broadcast({
+      type: 'diagnostic',
+      code: 'participant-kicked',
+      participantId: target.participant.id,
+      detail: 'Removed from the session by the host',
+    });
+    target.socket.close(1008, 'kicked-by-host');
+    this.broadcastSessionStatus();
   }
 
   /**
@@ -949,6 +1003,10 @@ export class SessionAuthority {
       participantId: participant.id,
       detail: evaluation.issues.map((issue) => issue.detail).join('; ')
         || 'Actual state diverges from the authoritative state',
+      // Machine-readable kinds: let clients grade severity (e.g. a stale
+      // report self-heals on the next actual-state cycle) without parsing
+      // the human-readable detail.
+      issues: evaluation.issues.map((issue) => issue.kind),
       sessionId: this.sessionId,
       stateRevision: this.state.stateRevision,
       // The resource comparison embeds concrete identities, which the wire
